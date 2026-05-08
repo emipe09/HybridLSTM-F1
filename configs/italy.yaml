@@ -1,0 +1,23 @@
+target_gp_name: "Italian Grand Prix"
+data_dir: "Data"
+model_data_dir: "Scripts/ModelData"
+results_dir: "Scripts/Results"
+cleaned_data_filename_template: "{safe_gp_name}_cleaned_data.csv"
+xgb_params_subdir: "xgboost/sw/params"
+xgb_params_filename_template: "{safe_gp_name}_xgb_params_sw.json"
+target_col: "LapTime_seconds"
+lap_col: "LapNumber"
+numerical_features: [TyreLife, LapNumber, Humidity_RBF_Median, Pressure_RBF_Median, TrackTemp_RBF_Median, WindSpeed_RBF_Median, TempDelta_RBF_Median, LapTime_prev]
+categorical_features: [Driver, Team, pirelliCompound, Year]
+holdout_ratio: 0.20
+window_ratio: 0.20
+window_train_ratio: 0.80
+window_step_ratio: 0.20
+alpha_cos: 0.50
+beta_cos: 0.50
+random_seed: 42
+optuna_trials: 100
+use_saved_xgb_params: true
+mlflow_enabled: true
+mlflow_tracking_uri: "Scripts/Results/mlruns"
+mlflow_experiment_name: "f1-lap-time-{safe_gp_name}"
