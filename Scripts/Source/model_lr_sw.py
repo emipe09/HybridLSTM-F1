@@ -1,19 +1,7 @@
-"""Linear Regression with sliding-window validation and sequential holdout.
-
-The script expects a cleaned modeling CSV produced by the notebooks or by the
-data-preparation workflow:
-
-    Scripts/ModelData/<TARGET_GP_NAME>/<safe_gp_name>_cleaned_data.csv
-
-Set TARGET_GP_NAME to one of the supported Grand Prix names, for example:
-
-    $env:TARGET_GP_NAME = "Bahrain Grand Prix"
-    python Scripts/Source/model_lr_sw.py
-"""
+"""Linear Regression with sliding-window validation and sequential holdout."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -23,204 +11,56 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 
-try:
-    import scipy.stats as stats
-except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environments.
-    stats = None
+from modeling_utils import (
+    align_one_hot,
+    build_sequential_split,
+    build_sliding_windows,
+    calc_holdout_ci,
+    calc_stats,
+    log_mlflow_run,
+    load_cleaned_data,
+    prepare_raw_features,
+    select_modeling_columns,
+    summarize_cos,
+)
 
 
-TARGET_COL = "LapTime_seconds"
-LAP_COL = "LapNumber"
+def fit_predict_linear_regression(X_train, y_train, X_eval, cat_cols):
+    X_train_enc, X_eval_enc = align_one_hot(X_train, X_eval, cat_cols, drop_first=True)
 
-NUM_COLS_BASE = [
-    "TyreLife",
-    "LapNumber",
-    "Humidity_RBF_Median",
-    "Pressure_RBF_Median",
-    "TrackTemp_RBF_Median",
-    "WindSpeed_RBF_Median",
-    "TempDelta_RBF_Median",
-    "LapTime_prev",
-]
-
-CAT_COLS = ["Driver", "Team", "pirelliCompound", "Year"]
-
-HOLDOUT_RATIO = 0.20
-WINDOW_RATIO = 0.20
-WINDOW_TRAIN_RATIO = 0.80
-WINDOW_STEP_RATIO = 0.20
-
-
-def safe_gp_name(gp_name: str) -> str:
-    return gp_name.lower().replace(" ", "_")
-
-
-def calc_stats(values):
-    values = np.asarray(values, dtype=float)
-    mean_value = float(np.mean(values))
-    if len(values) > 1 and stats is not None:
-        ci = stats.t.interval(0.95, len(values) - 1, loc=mean_value, scale=stats.sem(values))
-    elif len(values) > 1:
-        margin = 1.96 * float(np.std(values, ddof=1)) / np.sqrt(len(values))
-        ci = (mean_value - margin, mean_value + margin)
-    else:
-        ci = (mean_value, mean_value)
-    return mean_value, float(ci[0]), float(ci[1])
-
-
-def calc_holdout_ci(y_true, y_pred, n_bootstrap=1000, alpha=0.05, seed=42):
-    y_true = np.asarray(y_true)
-    y_pred = np.asarray(y_pred)
-    n = len(y_true)
-
-    rmse_point = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    mae_point = float(mean_absolute_error(y_true, y_pred))
-    r2_point = float(r2_score(y_true, y_pred))
-
-    if n < 2:
-        return {"rmse": (rmse_point, rmse_point), "mae": (mae_point, mae_point), "r2": (r2_point, r2_point)}
-
-    rng = np.random.default_rng(seed)
-    rmse_samples, mae_samples, r2_samples = [], [], []
-
-    for _ in range(n_bootstrap):
-        idx = rng.integers(0, n, size=n)
-        yb = y_true[idx]
-        pb = y_pred[idx]
-        rmse_samples.append(np.sqrt(mean_squared_error(yb, pb)))
-        mae_samples.append(mean_absolute_error(yb, pb))
-        r2_value = r2_score(yb, pb)
-        if np.isfinite(r2_value):
-            r2_samples.append(r2_value)
-
-    def percentile_ci(samples, point_value):
-        if not samples:
-            return point_value, point_value
-        lower = float(np.percentile(samples, 100 * (alpha / 2)))
-        upper = float(np.percentile(samples, 100 * (1 - alpha / 2)))
-        return lower, upper
-
-    return {
-        "rmse": percentile_ci(rmse_samples, rmse_point),
-        "mae": percentile_ci(mae_samples, mae_point),
-        "r2": percentile_ci(r2_samples, r2_point),
-    }
-
-
-def calc_cos_metric(error_sliding, error_final, std_sliding, std_final, alpha=0.5, beta=0.5):
-    error_sliding = float(error_sliding)
-    error_final = float(error_final)
-    std_sliding = float(std_sliding)
-    std_final = float(std_final)
-
-    if np.isclose(error_final, 0) or np.isclose(std_final, 0):
-        return np.nan, error_sliding, error_final, std_sliding, std_final
-
-    cos_value = alpha * (error_sliding / error_final) + beta * (std_sliding / std_final)
-    return cos_value, error_sliding, error_final, std_sliding, std_final
-
-
-def build_sliding_windows(n_laps, window_ratio, train_ratio, step_ratio):
-    if n_laps < 2:
-        raise ValueError("Insufficient data for sliding window validation.")
-
-    window_size = max(2, min(int(np.ceil(n_laps * window_ratio)), n_laps))
-    train_size = max(1, int(np.floor(window_size * train_ratio)))
-    if train_size >= window_size:
-        train_size = window_size - 1
-
-    val_size = window_size - train_size
-    step_size = max(1, int(np.ceil(window_size * step_ratio)))
-
-    windows = []
-    start = 0
-    while start + window_size <= n_laps:
-        windows.append((start, start + train_size, start + window_size))
-        start += step_size
-
-    last_start = n_laps - window_size
-    if not windows or windows[-1][0] != last_start:
-        windows.append((last_start, last_start + train_size, last_start + window_size))
-
-    return windows, window_size, train_size, val_size, step_size
-
-
-def build_sequential_split(df_base, valid_indices, holdout_ratio, lap_col):
-    if lap_col not in df_base.columns:
-        raise KeyError(f"Column '{lap_col}' not found.")
-
-    lap_series = df_base.loc[valid_indices, lap_col]
-    if lap_series.dropna().empty:
-        raise ValueError("No valid lap values are available.")
-
-    lap_min = int(np.floor(lap_series.min()))
-    lap_max = int(np.floor(lap_series.max()))
-    total_laps = lap_max - lap_min + 1
-
-    holdout_laps = max(1, int(np.ceil(total_laps * holdout_ratio)))
-    holdout_laps = min(holdout_laps, total_laps - 1)
-    holdout_start_lap = lap_max - holdout_laps + 1
-    model_end_lap = holdout_start_lap - 1
-
-    model_mask = (lap_series >= lap_min) & (lap_series <= model_end_lap)
-    holdout_mask = (lap_series >= holdout_start_lap) & (lap_series <= lap_max)
-    model_idx = lap_series[model_mask].index
-    holdout_idx = lap_series[holdout_mask].index
-
-    if len(model_idx) == 0 or len(holdout_idx) == 0:
-        raise ValueError("Invalid sequential split: modeling or holdout block is empty.")
-
-    return lap_series, lap_min, lap_max, model_idx, holdout_idx, holdout_start_lap, model_end_lap, total_laps
-
-
-def fit_predict_linear_regression(X_train, y_train, X_eval):
     imputer = SimpleImputer(strategy="median")
     scaler = StandardScaler()
     model = LinearRegression()
 
-    X_train_imp = imputer.fit_transform(X_train)
-    X_eval_imp = imputer.transform(X_eval)
+    X_train_imp = imputer.fit_transform(X_train_enc)
+    X_eval_imp = imputer.transform(X_eval_enc)
     X_train_scaled = scaler.fit_transform(X_train_imp)
     X_eval_scaled = scaler.transform(X_eval_imp)
 
     model.fit(X_train_scaled, y_train)
-    return model.predict(X_eval_scaled), model, imputer, scaler
-
-
-def load_cleaned_data():
-    target_gp_name = os.environ.get("TARGET_GP_NAME", "Bahrain Grand Prix")
-    script_dir = Path(__file__).resolve().parent
-    scripts_dir = script_dir.parent
-    input_csv_path = scripts_dir / "ModelData" / target_gp_name / f"{safe_gp_name(target_gp_name)}_cleaned_data.csv"
-
-    print(f"Loading cleaned data from:\n{input_csv_path}")
-    if not input_csv_path.exists():
-        raise FileNotFoundError(f"File not found: {input_csv_path}")
-
-    return target_gp_name, pd.read_csv(input_csv_path)
+    preds = model.predict(X_eval_scaled)
+    return preds, model, imputer, scaler, X_train_enc.columns
 
 
 def main():
-    target_gp_name, laps_cleaned = load_cleaned_data()
+    target_gp_name, config, repo_root, laps_cleaned = load_cleaned_data(Path(__file__))
     df_base = laps_cleaned.copy()
 
-    num_cols = [col for col in NUM_COLS_BASE if col in df_base.columns]
-    cat_cols = [col for col in CAT_COLS if col in df_base.columns]
+    target_col = str(config["target_col"])
+    lap_col = str(config["lap_col"])
+    num_cols, cat_cols = select_modeling_columns(df_base, config)
+    X_raw, y_raw, valid_indices = prepare_raw_features(df_base, num_cols, cat_cols, target_col)
 
     print("--- LINEAR REGRESSION: SLIDING WINDOW + SEQUENTIAL HOLDOUT ---")
     print(f"Grand Prix: {target_gp_name}")
+    print(
+        "Config: "
+        f"holdout={config['holdout_ratio']} | window={config['window_ratio']} | "
+        f"window_train={config['window_train_ratio']} | step={config['window_step_ratio']} | "
+        f"alpha_cos={config['alpha_cos']} | beta_cos={config['beta_cos']}"
+    )
     print(f"Numerical features: {num_cols}")
     print(f"Categorical features: {cat_cols}")
-
-    X_raw = df_base[num_cols + cat_cols].copy()
-    y_raw = df_base[TARGET_COL].copy()
-    valid_indices = y_raw.dropna().index
-    X_raw = X_raw.loc[valid_indices]
-    y_raw = y_raw.loc[valid_indices]
-
-    X_proc = X_raw.copy()
-    X_proc[cat_cols] = X_proc[cat_cols].fillna("Missing")
-    X_proc = pd.get_dummies(X_proc, columns=cat_cols, drop_first=True)
 
     (
         lap_series,
@@ -231,32 +71,34 @@ def main():
         holdout_start_lap,
         model_end_lap,
         total_laps,
-    ) = build_sequential_split(df_base, valid_indices, HOLDOUT_RATIO, LAP_COL)
+    ) = build_sequential_split(df_base, valid_indices, float(config["holdout_ratio"]), lap_col)
 
-    X_model = X_proc.loc[model_idx].copy()
+    X_model_raw = X_raw.loc[model_idx].copy()
     y_model = y_raw.loc[model_idx].copy()
-    X_holdout = X_proc.loc[holdout_idx].copy()
+    X_holdout_raw = X_raw.loc[holdout_idx].copy()
     y_holdout = y_raw.loc[holdout_idx].copy()
 
     model_laps = lap_series.loc[model_idx]
     model_order_idx = model_laps.sort_values(kind="mergesort").index
-    X_model = X_model.loc[model_order_idx].reset_index(drop=True)
+    X_model_raw = X_model_raw.loc[model_order_idx].reset_index(drop=True)
     y_model = y_model.loc[model_order_idx].reset_index(drop=True)
     lap_model_sorted = model_laps.loc[model_order_idx].reset_index(drop=True)
     unique_laps = np.sort(pd.to_numeric(lap_model_sorted, errors="coerce").dropna().unique())
 
     windows, window_size, train_size, val_size, step_size = build_sliding_windows(
-        len(unique_laps), WINDOW_RATIO, WINDOW_TRAIN_RATIO, WINDOW_STEP_RATIO
+        len(unique_laps),
+        float(config["window_ratio"]),
+        float(config["window_train_ratio"]),
+        float(config["window_step_ratio"]),
     )
 
     print("\n--- Sequential split ---")
     print(f"Total laps: {total_laps} (LapNumber {lap_min}-{lap_max})")
-    print(f"Modeling block: laps {lap_min}-{model_end_lap} | records={len(X_model)}")
-    print(f"Holdout block: laps {holdout_start_lap}-{lap_max} | records={len(X_holdout)}")
+    print(f"Modeling block: laps {lap_min}-{model_end_lap} | records={len(X_model_raw)}")
+    print(f"Holdout block: laps {holdout_start_lap}-{lap_max} | records={len(X_holdout_raw)}")
     print(f"Sliding windows: {len(windows)} | window={window_size} | train/val={train_size}/{val_size} | step={step_size}")
 
     results = {"window": [], "rmse": [], "mae": [], "r2": [], "std": []}
-    sw_coefs = []
 
     print("\n--- Sliding-window validation ---")
     for i, (start, split, end) in enumerate(windows, start=1):
@@ -265,13 +107,12 @@ def main():
         train_mask = lap_model_sorted.isin(train_laps)
         val_mask = lap_model_sorted.isin(val_laps)
 
-        X_train, y_train = X_model.loc[train_mask], y_model.loc[train_mask]
-        X_val, y_val = X_model.loc[val_mask], y_model.loc[val_mask]
+        X_train, y_train = X_model_raw.loc[train_mask], y_model.loc[train_mask]
+        X_val, y_val = X_model_raw.loc[val_mask], y_model.loc[val_mask]
         if len(X_train) == 0 or len(X_val) == 0:
             raise ValueError(f"Window {i}: empty train or validation fold.")
 
-        preds, window_model, _, _ = fit_predict_linear_regression(X_train, y_train, X_val)
-        sw_coefs.append(window_model.coef_)
+        preds, *_ = fit_predict_linear_regression(X_train, y_train, X_val, cat_cols)
 
         rmse_value = float(np.sqrt(mean_squared_error(y_val, preds)))
         mae_value = float(mean_absolute_error(y_val, preds))
@@ -295,25 +136,73 @@ def main():
     r2_m, r2_l, r2_u = calc_stats(results["r2"])
     std_m, _, _ = calc_stats(results["std"])
 
-    _, final_model, final_imputer, final_scaler = fit_predict_linear_regression(X_model, y_model, X_model)
-    X_model_scaled = final_scaler.transform(final_imputer.transform(X_model))
-    preds_model = final_model.predict(X_model_scaled)
-    X_holdout_scaled = final_scaler.transform(final_imputer.transform(X_holdout))
-    preds_holdout = final_model.predict(X_holdout_scaled)
+    preds_holdout, final_model, _, _, feature_names = fit_predict_linear_regression(
+        X_model_raw, y_model, X_holdout_raw, cat_cols
+    )
 
-    holdout_ci = calc_holdout_ci(y_holdout.to_numpy(), preds_holdout)
+    holdout_ci = calc_holdout_ci(y_holdout.to_numpy(), preds_holdout, seed=int(config["random_seed"]))
     rmse_holdout = float(np.sqrt(mean_squared_error(y_holdout, preds_holdout)))
     mae_holdout = float(mean_absolute_error(y_holdout, preds_holdout))
     r2_holdout = float(r2_score(y_holdout, preds_holdout))
     std_holdout = float(np.std(np.asarray(y_holdout) - np.asarray(preds_holdout), ddof=1)) if len(y_holdout) > 1 else 0.0
 
-    cos_mae, mae_sw, mae_final, std_sw, std_final = calc_cos_metric(mae_m, mae_holdout, std_m, std_holdout)
-    cos_rmse, rmse_sw, rmse_final, _, _ = calc_cos_metric(rmse_m, rmse_holdout, std_m, std_holdout)
+    cos = summarize_cos(
+        results,
+        mae_m,
+        rmse_m,
+        mae_holdout,
+        rmse_holdout,
+        std_m,
+        std_holdout,
+        float(config["alpha_cos"]),
+        float(config["beta_cos"]),
+    )
 
-    cos_mae_windows = 0.5 * (np.array(results["mae"]) / mae_holdout) + 0.5 * (np.array(results["std"]) / std_holdout)
-    cos_rmse_windows = 0.5 * (np.array(results["rmse"]) / rmse_holdout) + 0.5 * (np.array(results["std"]) / std_holdout)
-    _, cos_mae_l, cos_mae_u = calc_stats(cos_mae_windows)
-    _, cos_rmse_l, cos_rmse_u = calc_stats(cos_rmse_windows)
+    split_info = {
+        "total_laps": total_laps,
+        "lap_min": lap_min,
+        "lap_max": lap_max,
+        "model_end_lap": model_end_lap,
+        "holdout_start_lap": holdout_start_lap,
+        "model_records": len(X_model_raw),
+        "holdout_records": len(X_holdout_raw),
+        "sliding_windows": len(windows),
+        "window_size": window_size,
+        "window_train_size": train_size,
+        "window_validation_size": val_size,
+        "window_step_size": step_size,
+    }
+    summary_metrics = {
+        "sw_rmse_mean": rmse_m,
+        "sw_rmse_ci": (rmse_l, rmse_u),
+        "sw_mae_mean": mae_m,
+        "sw_mae_ci": (mae_l, mae_u),
+        "sw_r2_mean": r2_m,
+        "sw_r2_ci": (r2_l, r2_u),
+        "sw_residual_std_mean": std_m,
+        "holdout_rmse": rmse_holdout,
+        "holdout_rmse_ci": holdout_ci["rmse"],
+        "holdout_mae": mae_holdout,
+        "holdout_mae_ci": holdout_ci["mae"],
+        "holdout_r2": r2_holdout,
+        "holdout_r2_ci": holdout_ci["r2"],
+        "holdout_residual_std": std_holdout,
+        "cos_mae": cos["cos_mae"],
+        "cos_mae_ci": cos["cos_mae_ci"],
+        "cos_rmse": cos["cos_rmse"],
+        "cos_rmse_ci": cos["cos_rmse_ci"],
+    }
+    log_mlflow_run(
+        repo_root,
+        config,
+        "linear_regression",
+        num_cols,
+        cat_cols,
+        split_info,
+        results,
+        summary_metrics,
+        extra_params={"preprocessing": "median_imputer_standard_scaler_one_hot_drop_first"},
+    )
 
     print("\n--- Sliding-window summary (indicative CI) ---")
     print("NOTE: sliding windows overlap; these confidence intervals are descriptive.")
@@ -325,13 +214,13 @@ def main():
     print(f"RMSE: {rmse_holdout:.4f} | 95% CI: [{holdout_ci['rmse'][0]:.4f}, {holdout_ci['rmse'][1]:.4f}]")
     print(f"MAE:  {mae_holdout:.4f} | 95% CI: [{holdout_ci['mae'][0]:.4f}, {holdout_ci['mae'][1]:.4f}]")
     print(f"R2:   {r2_holdout:.4f} | 95% CI: [{holdout_ci['r2'][0]:.4f}, {holdout_ci['r2'][1]:.4f}]")
-    print(f"COS_MAE:  {cos_mae:.4f} | 95% CI: [{cos_mae_l:.4f}, {cos_mae_u:.4f}]")
-    print(f"          MAE SW/final={mae_sw:.4f}/{mae_final:.4f} | STD SW/final={std_sw:.4f}/{std_final:.4f}")
-    print(f"COS_RMSE: {cos_rmse:.4f} | 95% CI: [{cos_rmse_l:.4f}, {cos_rmse_u:.4f}]")
-    print(f"          RMSE SW/final={rmse_sw:.4f}/{rmse_final:.4f} | STD SW/final={std_sw:.4f}/{std_final:.4f}")
+    print(f"COS_MAE:  {cos['cos_mae']:.4f} | 95% CI: [{cos['cos_mae_ci'][0]:.4f}, {cos['cos_mae_ci'][1]:.4f}]")
+    print(f"          MAE SW/final={cos['mae_sw']:.4f}/{cos['mae_final']:.4f} | STD SW/final={cos['std_sw']:.4f}/{cos['std_final']:.4f}")
+    print(f"COS_RMSE: {cos['cos_rmse']:.4f} | 95% CI: [{cos['cos_rmse_ci'][0]:.4f}, {cos['cos_rmse_ci'][1]:.4f}]")
+    print(f"          RMSE SW/final={cos['rmse_sw']:.4f}/{cos['rmse_final']:.4f} | STD SW/final={cos['std_sw']:.4f}/{cos['std_final']:.4f}")
 
     print("\n--- Final model coefficients ---")
-    coefs = pd.Series(final_model.coef_, index=X_model.columns)
+    coefs = pd.Series(final_model.coef_, index=feature_names)
     print(coefs.reindex(coefs.abs().sort_values(ascending=False).index).head(20).to_frame("coefficient"))
 
 
