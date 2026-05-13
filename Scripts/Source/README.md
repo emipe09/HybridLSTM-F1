@@ -1,7 +1,7 @@
 # Modeling Scripts
 
-Only the current sliding-window modeling scripts and shared modeling utilities
-are kept here.
+Reproducible modeling scripts, feature-selection scripts, and shared modeling
+utilities are kept here.
 
 ## YAML Configuration
 
@@ -10,8 +10,9 @@ The scripts can read experiment settings from `configs/*.yaml` through the
 
 ```powershell
 $env:CONFIG_PATH = "configs/bahrain.yaml"
-python Scripts/Source/model_lr_sw.py
-python Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
 ```
 
 When `CONFIG_PATH` is not defined, the scripts fall back to the corresponding
@@ -72,6 +73,48 @@ Runs XGBoost for the selected Grand Prix using:
 - Optuna tuning when no saved parameters are available
 - calibrated `n_estimators` from sliding-window early stopping
 - final sequential holdout evaluation
+
+## `backward_elimination.py`
+
+Runs p-value based backward elimination for the selected Grand Prix using the
+same configured target, feature lists, and final 20% sequential holdout split.
+The elimination procedure fits one-hot encoding, median imputation, scaling,
+and OLS only on the first modeling block; the final holdout is reported as
+untouched and is not used for feature selection. OLS is solved directly with
+NumPy to avoid fragile `statsmodels`/`scipy` imports on local Python builds; the
+reported p-values use a large-sample normal approximation.
+
+```powershell
+$env:TARGET_GP_NAME = "Bahrain Grand Prix"
+.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
+.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py --all
+```
+
+Outputs are written under `Scripts/Results/backward_elimination/` by default:
+
+- elimination history as CSV
+- strong encoded-feature correlations (`r > 0.80` or `r < -0.80`) as CSV,
+  including whether each correlated feature was removed
+- selected and removed features as JSON
+- full-model versus reduced-model `R2`, RMSE, and MAE comparison in JSON
+- final OLS summary as text
+
+## `extract_pca_loading_cells.py`
+
+Extracts the PCA loading cells from all circuit notebooks and saves static
+2D PCA loading PNGs by Grand Prix and feature group:
+
+```powershell
+.\.venv\Scripts\python.exe Scripts/Source/extract_pca_loading_cells.py
+```
+
+Outputs are written under `Scripts/Results/pca_loading_cells/` by default:
+
+- `pca_loading_cells_all_gps.ipynb`
+- `pca_loading_cells_all_gps.py`
+- `pca_loading_cells_manifest.json`
+- `pca_loading_images_manifest.json`
+- `images/<safe_gp_name>/pca_loadings_*.png`
 
 ## `run_all_models.py`
 
