@@ -28,6 +28,7 @@ TCC/
 |  |- ModelData/
 |  |- Notebooks/
 |  |- Source/
+|     |- backward_elimination.py
 |     |- model_lr_sw.py
 |     |- model_xgb_sw.py
 |     |- modeling_utils.py
@@ -53,7 +54,7 @@ Generated outputs, FastF1 caches, local PDFs, notebook plot folders, XGBoost par
 - race weather
 - race results
 
-The modeling scripts run from cleaned datasets in `Scripts/ModelData/`. Those files contain the article-facing engineered data used by the notebooks and by the two scripts in `Scripts/Source/`.
+The modeling scripts run from cleaned datasets in `Scripts/ModelData/`. Those files contain the article-facing engineered data used by the notebooks and by the reproducible scripts in `Scripts/Source/`.
 
 ## Notebooks
 
@@ -71,10 +72,11 @@ Each notebook is written in English and follows the same structure: data prepara
 
 ## Modeling Scripts
 
-Only the current sliding-window scripts are kept in `Scripts/Source/`:
+The reproducible modeling and feature-selection scripts are kept in `Scripts/Source/`:
 
 - `model_lr_sw.py`: Linear Regression with median imputation, standard scaling, sliding-window validation, and sequential holdout.
 - `model_xgb_sw.py`: XGBoost with Optuna hyperparameter tuning, sliding-window validation, and sequential holdout.
+- `backward_elimination.py`: p-value based backward elimination for the Linear Regression design matrix, fitted only on the first sequential modeling block.
 - `run_all_models.py`: batch runner for executing both model scripts across all configured Grand Prix events.
 - `modeling_utils.py`: shared configuration, temporal split, encoding, metric, confidence interval, COS, and MLflow tracking helpers.
 
@@ -124,8 +126,9 @@ PowerShell:
 
 ```powershell
 $env:CONFIG_PATH = "configs/bahrain.yaml"
-python Scripts/Source/model_lr_sw.py
-python Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
 ```
 
 The YAML files control the Grand Prix name, target column, lap column, feature
@@ -147,8 +150,9 @@ Alternatively, select a Grand Prix directly:
 
 ```powershell
 $env:TARGET_GP_NAME = "Bahrain Grand Prix"
-python Scripts/Source/model_lr_sw.py
-python Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
 ```
 
 Bash:
@@ -156,6 +160,7 @@ Bash:
 ```bash
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_sw.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_sw.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/backward_elimination.py
 ```
 
 To run all configured Grand Prix events and both model families in sequence:
@@ -173,6 +178,13 @@ You can limit the batch run to one model family:
 
 If an XGBoost parameter file is not available for a circuit, the XGBoost script
 will run Optuna before training, so the full batch may take substantially longer.
+Backward-elimination outputs are generated under
+`Scripts/Results/backward_elimination/` and are ignored by Git.
+To run backward elimination for every configured Grand Prix:
+
+```powershell
+.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py --all
+```
 
 Supported `TARGET_GP_NAME` values are:
 
