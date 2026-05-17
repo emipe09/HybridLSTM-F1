@@ -41,7 +41,7 @@ from modeling_utils import (
     select_modeling_columns,
 )
 
-DEFAULT_CONFIG_ORDER = ["bahrain.yaml", "saudi.yaml", "usa.yaml", "italy.yaml", "hungary.yaml"]
+DEFAULT_CONFIG_ORDER = ["bahrain.yaml"]
 NORMAL_95 = 1.959963984540054
 STRONG_CORRELATION_THRESHOLD = 0.80
 STRONG_CORRELATION_COLUMNS = [

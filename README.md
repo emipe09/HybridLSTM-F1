@@ -29,6 +29,7 @@ TCC/
 |  |- Notebooks/
 |  |- Source/
 |     |- backward_elimination.py
+|     |- correlation_ablation_lr.py
 |     |- model_lr_sw.py
 |     |- model_xgb_sw.py
 |     |- modeling_utils.py
@@ -76,7 +77,10 @@ The reproducible modeling and feature-selection scripts are kept in `Scripts/Sou
 
 - `model_lr_sw.py`: Linear Regression with median imputation, standard scaling, sliding-window validation, and sequential holdout.
 - `model_xgb_sw.py`: XGBoost with Optuna hyperparameter tuning, sliding-window validation, and sequential holdout.
+- `model_interpretability.py`: unified interpretability runner that loads the saved Linear Regression and XGBoost models, then exports LR coefficients, XGBoost feature importance, XGBoost SHAP values, and a local SHAP force plot.
 - `backward_elimination.py`: p-value based backward elimination for the Linear Regression design matrix, fitted only on the first sequential modeling block.
+- `correlation_ablation_lr.py`: Linear Regression ablation runner that detects encoded-feature pairs with `|r| >= 0.80` inside the modeling block, then reruns the full sliding-window and sequential-holdout protocol after removing one feature from each pair.
+- `regression_diagnostics_lr.py`: Linear Regression residual-diagnostics runner that fits the model on the sequential modeling block and generates in-sample diagnostics for that retrained 80% block while keeping the final holdout unused.
 - `run_all_models.py`: batch runner for executing both model scripts across all configured Grand Prix events.
 - `modeling_utils.py`: shared configuration, temporal split, encoding, metric, confidence interval, COS, and MLflow tracking helpers.
 
@@ -128,7 +132,10 @@ PowerShell:
 $env:CONFIG_PATH = "configs/bahrain.yaml"
 .\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
 .\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_interpretability.py
 .\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
+.\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py
+.\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py
 ```
 
 The YAML files control the Grand Prix name, target column, lap column, feature
@@ -160,7 +167,10 @@ Bash:
 ```bash
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_sw.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_sw.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_interpretability.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/backward_elimination.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/correlation_ablation_lr.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/regression_diagnostics_lr.py
 ```
 
 To run all configured Grand Prix events and both model families in sequence:
@@ -186,6 +196,27 @@ To run backward elimination for every configured Grand Prix:
 .\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py --all
 ```
 
+Correlation-ablation outputs are generated under
+`Scripts/Results/correlation_ablation_lr/` and are ignored by Git. To run the
+correlated-feature ablation for every configured Grand Prix:
+
+```powershell
+.\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py --all
+```
+
+Regression-diagnostics outputs are generated under
+`Scripts/Results/regression_diagnostics/` and are ignored by Git. The diagnostic
+script preserves the final sequential holdout: preprocessing and the Linear
+Regression model are fitted only on the first modeling block, then residual
+plots, prediction tables, a standard statsmodels OLS summary, and coefficient
+plots are produced for that retrained 80% modeling block. The final 20% holdout
+remains unused by the diagnostic script and is reserved for final model
+evaluation. To run the diagnostics for every configured Grand Prix:
+
+```powershell
+.\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py --all
+```
+
 Supported `TARGET_GP_NAME` values are:
 
 - `Bahrain Grand Prix`
@@ -205,6 +236,7 @@ Numerical predictors:
 - `TrackTemp_RBF_Median`
 - `WindSpeed_RBF_Median`
 - `TempDelta_RBF_Median`
+- `Year`
 - `LapTime_prev`
 
 Categorical predictors:
@@ -212,11 +244,24 @@ Categorical predictors:
 - `Driver`
 - `Team`
 - `pirelliCompound`
-- `Year`
 
 Target:
 
 - `LapTime_seconds`
+
+Feature lists are configured per Grand Prix in `configs/*.yaml`. After the
+correlation and PCA-loading analysis, the following circuit-specific exclusions
+were applied to reduce strong redundancy while preserving the most physically
+interpretable variable in each correlated group:
+
+| Grand Prix | Removed variable(s) | Retained correlated variable | Rationale |
+|---|---|---|---|
+| United States Grand Prix | `TempDelta_RBF_Median`, `Year` | `TrackTemp_RBF_Median` | The COTA layout combines high-speed direction changes, heavy braking, and traction-demanding exits, making track temperature a direct proxy for tire grip, thermal degradation, and operating-window effects. PCA loadings and correlation patterns supported keeping the real-time thermal condition instead of the derived temperature delta and year trend. |
+| Saudi Arabian Grand Prix | `TrackTemp_RBF_Median` | `Pressure_RBF_Median` | At Jeddah, the selected correlated structure favored pressure as the broader atmospheric-state proxy. Pressure can reflect weather-density conditions that affect aerodynamic behavior and engine response, while avoiding redundant thermal information already captured through the retained predictors. |
+| Hungarian Grand Prix | `Humidity_RBF_Median` | `TrackTemp_RBF_Median` | The Hungaroring is traction-limited and tire-energy sensitive, so track temperature has a clearer physical link to grip, overheating risk, and degradation than humidity in the retained correlated group. PCA loadings supported prioritizing the track-surface thermal condition. |
+
+These exclusions do not change the temporal validation protocol. They only
+adjust the configured feature set used by the affected circuit models.
 
 ## Reproducibility Notes
 

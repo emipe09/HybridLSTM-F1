@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import pickle
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +15,7 @@ from sklearn.preprocessing import StandardScaler
 
 from modeling_utils import (
     align_one_hot,
+    build_lr_model_paths,
     build_sequential_split,
     build_sliding_windows,
     calc_holdout_ci,
@@ -140,6 +143,37 @@ def main():
         X_model_raw, y_model, X_holdout_raw, cat_cols
     )
 
+    lr_model_path, lr_model_metadata_path = build_lr_model_paths(repo_root, config)
+    lr_model_path.parent.mkdir(parents=True, exist_ok=True)
+    lr_payload = {
+        "model": final_model,
+        "feature_names": list(feature_names),
+        "numerical_features": num_cols,
+        "categorical_features": cat_cols,
+        "target_col": target_col,
+        "lap_col": lap_col,
+        "training_block": "first_sequential_modeling_block",
+        "preprocessing": "median_imputer_standard_scaler_one_hot_drop_first",
+    }
+    with lr_model_path.open("wb") as file:
+        pickle.dump(lr_payload, file)
+    lr_model_metadata = {
+        "target_gp_name": target_gp_name,
+        "model": "linear_regression",
+        "model_path": str(lr_model_path),
+        "target_col": target_col,
+        "lap_col": lap_col,
+        "numerical_features": num_cols,
+        "categorical_features": cat_cols,
+        "encoded_feature_names": list(feature_names),
+        "training_block": "first_sequential_modeling_block",
+        "holdout_usage": "final sequential holdout is not used for training",
+        "preprocessing": "median_imputer_standard_scaler_one_hot_drop_first",
+    }
+    lr_model_metadata_path.write_text(json.dumps(lr_model_metadata, indent=2), encoding="utf-8")
+    print(f"Saved final Linear Regression model to: {lr_model_path}")
+    print(f"Saved final Linear Regression model metadata to: {lr_model_metadata_path}")
+
     holdout_ci = calc_holdout_ci(y_holdout.to_numpy(), preds_holdout, seed=int(config["random_seed"]))
     rmse_holdout = float(np.sqrt(mean_squared_error(y_holdout, preds_holdout)))
     mae_holdout = float(mean_absolute_error(y_holdout, preds_holdout))
@@ -202,6 +236,7 @@ def main():
         results,
         summary_metrics,
         extra_params={"preprocessing": "median_imputer_standard_scaler_one_hot_drop_first"},
+        artifacts=[lr_model_path, lr_model_metadata_path],
     )
 
     print("\n--- Sliding-window summary (indicative CI) ---")

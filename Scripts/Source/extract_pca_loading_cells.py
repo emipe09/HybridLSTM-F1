@@ -1,14 +1,8 @@
-"""Extract PCA loading cells from all circuit notebooks.
-
-The script reads the configured notebook folder, selects only cells that build
-or call PCA loading plots, and writes a compact notebook plus a plain Python
-file under Scripts/Results/pca_loading_cells by default.
-"""
+"""Generate PCA loading plots from the configured cleaned modeling datasets."""
 
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import re
 from pathlib import Path
@@ -18,6 +12,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
@@ -26,44 +21,23 @@ from sklearn.preprocessing import StandardScaler
 from modeling_utils import load_simple_yaml, safe_gp_name
 
 
-DEFAULT_NOTEBOOKS = [
-    ("Bahrain Grand Prix", "bahrain.yaml", "Notebook_Bahrain.ipynb", "Bahrain"),
-    ("Saudi Arabian Grand Prix", "saudi.yaml", "Notebook_Saudi.ipynb", "Saudi Arabia"),
-    ("United States Grand Prix", "usa.yaml", "Notebook_USA.ipynb", "USA"),
-    ("Italian Grand Prix", "italy.yaml", "Notebook_Italia.ipynb", "Italy"),
-    ("Hungarian Grand Prix", "hungary.yaml", "Notebook_Hungary.ipynb", "Hungary"),
-]
-
-DEFAULT_MATCH_TERMS = [
-    "Loadings PCA",
-    "plot_pca_loadings",
-    "loadings = pca.components_",
+DEFAULT_GRAND_PRIX = [
+    ("Bahrain Grand Prix", "bahrain.yaml", "Bahrain"),
+    ("Saudi Arabian Grand Prix", "saudi.yaml", "Saudi Arabia"),
+    ("United States Grand Prix", "usa.yaml", "USA"),
+    ("Italian Grand Prix", "italy.yaml", "Italy"),
+    ("Hungarian Grand Prix", "hungary.yaml", "Hungary"),
 ]
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Extract only PCA loading cells from all Grand Prix notebooks."
-    )
-    parser.add_argument(
-        "--notebooks-dir",
-        default="Scripts/Notebooks",
-        help="Directory containing the circuit notebooks. Default: Scripts/Notebooks.",
+        description="Generate PCA loading plots from cleaned model datasets for all configured Grand Prix."
     )
     parser.add_argument(
         "--output-dir",
         default="Scripts/Results/pca_loading_cells",
-        help="Directory for extracted artifacts. Default: Scripts/Results/pca_loading_cells.",
-    )
-    parser.add_argument(
-        "--keep-outputs",
-        action="store_true",
-        help="Keep notebook cell outputs. By default outputs are stripped.",
-    )
-    parser.add_argument(
-        "--skip-cell-export",
-        action="store_true",
-        help="Only save PCA loading images; skip the extracted notebook and Python cell exports.",
+        help="Directory for generated PCA artifacts. Default: Scripts/Results/pca_loading_cells.",
     )
     return parser.parse_args()
 
@@ -77,58 +51,6 @@ def resolve_repo_path(repo_root: Path, path_value: str) -> Path:
     if path.is_absolute():
         return path
     return repo_root / path
-
-
-def source_text(cell: dict) -> str:
-    source = cell.get("source", "")
-    if isinstance(source, list):
-        return "".join(source)
-    return str(source)
-
-
-def source_lines(text: str) -> list[str]:
-    return text.splitlines(keepends=True)
-
-
-def is_pca_loading_cell(cell: dict, match_terms: list[str]) -> bool:
-    text = source_text(cell)
-    return any(term in text for term in match_terms)
-
-
-def strip_outputs(cell: dict) -> dict:
-    clean_cell = copy.deepcopy(cell)
-    if clean_cell.get("cell_type") == "code":
-        clean_cell["outputs"] = []
-        clean_cell["execution_count"] = None
-    return clean_cell
-
-
-def make_markdown_cell(text: str) -> dict:
-    return {
-        "cell_type": "markdown",
-        "metadata": {},
-        "source": source_lines(text),
-    }
-
-
-def extract_cells_from_notebook(notebook_path: Path, keep_outputs: bool) -> list[dict]:
-    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
-    extracted = []
-
-    for cell_index, cell in enumerate(notebook.get("cells", [])):
-        if not is_pca_loading_cell(cell, DEFAULT_MATCH_TERMS):
-            continue
-
-        extracted_cell = copy.deepcopy(cell) if keep_outputs else strip_outputs(cell)
-        extracted_cell.setdefault("metadata", {})
-        extracted_cell["metadata"] = {
-            **extracted_cell["metadata"],
-            "source_notebook": notebook_path.name,
-            "source_cell_index": cell_index,
-        }
-        extracted.append(extracted_cell)
-
-    return extracted
 
 
 def build_cleaned_data_path(repo_root: Path, config: dict) -> Path:
@@ -146,13 +68,21 @@ def slugify(value: str) -> str:
 
 
 def prepare_pca_inputs(laps_cleaned: pd.DataFrame, config: dict) -> tuple[PCA, pd.Index]:
-    target_col = str(config["target_col"])
     numerical_features = list(config["numerical_features"])
     categorical_features = list(config["categorical_features"])
 
-    num_cols = [target_col] + [col for col in numerical_features if col != target_col]
-    num_cols = [col for col in num_cols if col in laps_cleaned.columns]
-    cat_cols = [col for col in categorical_features if col in laps_cleaned.columns]
+    def existing_unique(columns: list[str]) -> list[str]:
+        selected = []
+        seen = set()
+        for col in columns:
+            if col in seen or col not in laps_cleaned.columns:
+                continue
+            selected.append(col)
+            seen.add(col)
+        return selected
+
+    num_cols = existing_unique(numerical_features)
+    cat_cols = existing_unique(categorical_features)
 
     cat_dummies = pd.get_dummies(laps_cleaned[cat_cols].astype(str), prefix=cat_cols)
     num_df = laps_cleaned[num_cols].copy()
@@ -189,20 +119,19 @@ def pca_loading_groups(feature_names: pd.Index) -> dict[str, list[str]]:
             "TrackTemp_RBF_Median",
             "TempDelta_RBF_Median",
             "WindDirection_RBF_Median",
+            "Year",
         ],
         "teams": [col for col in feature_names if col.startswith("Team_")],
         "drivers": [col for col in feature_names if col.startswith("Driver_")],
-        "years": [col for col in feature_names if col.startswith("Year_")],
     }
 
 
 def group_title(group_name: str, circuit_label: str) -> str:
     title_map = {
         "lap_time_and_tyres": "PCA Loadings - Lap Time and Tyres",
-        "weather": "PCA Loadings - Weather",
+        "weather": "PCA Loadings - Weather & Year",
         "teams": "PCA Loadings - Teams",
         "drivers": "PCA Loadings - Drivers",
-        "years": "PCA Loadings - Years",
     }
     return f"{title_map[group_name]} - {circuit_label}"
 
@@ -239,11 +168,109 @@ def plot_pca_loadings_subset_2d_static(pca, subset_features, full_feature_names,
     return subset_features
 
 
+def compact_feature_label(feature_name: str) -> str:
+    replacements = {
+        "Humidity_RBF_Median": "Humidity",
+        "Pressure_RBF_Median": "Pressure",
+        "TrackTemp_RBF_Median": "TrackTemp",
+        "WindSpeed_RBF_Median": "WindSpeed",
+        "TempDelta_RBF_Median": "TempDelta",
+        "LapTime_prev": "LapTime_prev",
+        "pirelliCompound_": "Compound_",
+    }
+    label = feature_name
+    for old, new in replacements.items():
+        label = label.replace(old, new)
+    label = label.replace("Driver_", "Drv_").replace("Team_", "Team_")
+    return label
+
+
+def top_component_loadings(
+    pca: PCA,
+    feature_names: pd.Index,
+    grand_prix: str,
+    circuit_label: str,
+    top_n: int = 5,
+) -> list[dict]:
+    loadings = pca.components_.T
+    rows = []
+    for component_index, component_name in enumerate(["PC1", "PC2"]):
+        component_loadings = loadings[:, component_index]
+        top_indices = np.argsort(np.abs(component_loadings))[::-1][:top_n]
+        for rank, feature_index in enumerate(top_indices, start=1):
+            loading = float(component_loadings[feature_index])
+            rows.append(
+                {
+                    "grand_prix": grand_prix,
+                    "circuit_label": circuit_label,
+                    "component": component_name,
+                    "rank": rank,
+                    "feature": str(feature_names[feature_index]),
+                    "feature_label": compact_feature_label(str(feature_names[feature_index])),
+                    "loading": loading,
+                    "abs_loading": abs(loading),
+                }
+            )
+    return rows
+
+
+def plot_grouped_top_component_loadings(loadings_df: pd.DataFrame, output_path: Path, top_n: int = 5) -> None:
+    circuits = list(dict.fromkeys(loadings_df["circuit_label"]))
+    colors = ["#2f6f9f", "#d55e00", "#009e73", "#cc79a7", "#f0b429"]
+    fig, axes = plt.subplots(2, 1, figsize=(14, 9), sharex=True)
+    x = np.arange(len(circuits))
+    width = 0.14
+    offsets = (np.arange(top_n) - (top_n - 1) / 2) * width
+
+    for ax, component in zip(axes, ["PC1", "PC2"]):
+        component_df = loadings_df[loadings_df["component"] == component]
+        for rank in range(1, top_n + 1):
+            rank_df = (
+                component_df[component_df["rank"] == rank]
+                .set_index("circuit_label")
+                .reindex(circuits)
+                .reset_index()
+            )
+            bar_positions = x + offsets[rank - 1]
+            bars = ax.bar(
+                bar_positions,
+                rank_df["abs_loading"],
+                width=width,
+                label=f"Top {rank}",
+                color=colors[rank - 1],
+            )
+            for bar, feature_label in zip(bars, rank_df["feature_label"]):
+                if pd.isna(feature_label):
+                    continue
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.005,
+                    feature_label,
+                    ha="center",
+                    va="bottom",
+                    rotation=90,
+                    fontsize=7,
+                )
+
+        ax.set_title(f"Top {top_n} absolute PCA loadings by circuit - {component}")
+        ax.set_ylabel("Absolute loading")
+        ax.grid(axis="y", linestyle="--", alpha=0.35)
+        ax.set_ylim(0, component_df["abs_loading"].max() * 1.28)
+
+    axes[-1].set_xticks(x)
+    axes[-1].set_xticklabels(circuits)
+    axes[0].legend(ncol=top_n, loc="upper center", bbox_to_anchor=(0.5, 1.22))
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def save_pca_loading_images(repo_root: Path, output_dir: Path) -> list[dict]:
     image_results = []
+    top_loading_rows = []
     images_root = output_dir / "images"
 
-    for grand_prix, config_name, _notebook_name, circuit_label in DEFAULT_NOTEBOOKS:
+    for grand_prix, config_name, circuit_label in DEFAULT_GRAND_PRIX:
         config_path = repo_root / "configs" / config_name
         config = load_simple_yaml(config_path)
         cleaned_data_path = build_cleaned_data_path(repo_root, config)
@@ -251,6 +278,7 @@ def save_pca_loading_images(repo_root: Path, output_dir: Path) -> list[dict]:
 
         pca, feature_names = prepare_pca_inputs(laps_cleaned, config)
         groups = pca_loading_groups(feature_names)
+        top_loading_rows.extend(top_component_loadings(pca, feature_names, grand_prix, circuit_label))
 
         gp_output_dir = images_root / safe_gp_name(grand_prix)
         gp_output_dir.mkdir(parents=True, exist_ok=True)
@@ -286,136 +314,72 @@ def save_pca_loading_images(repo_root: Path, output_dir: Path) -> list[dict]:
 
         image_results.append(gp_result)
 
+    top_loadings_df = pd.DataFrame(top_loading_rows)
+    top_loadings_csv = output_dir / "top5_pc1_pc2_loadings_by_track.csv"
+    top_loadings_png = output_dir / "top5_pc1_pc2_loadings_by_track.png"
+    top_loadings_df.to_csv(top_loadings_csv, index=False)
+    plot_grouped_top_component_loadings(top_loadings_df, top_loadings_png)
+    image_results.append(
+        {
+            "grand_prix": "all",
+            "images": [
+                {
+                    "group": "top_pc1_pc2_loadings_by_track",
+                    "title": "Top 5 PC1 and PC2 Loadings by Track",
+                    "path": str(top_loadings_png),
+                    "data": str(top_loadings_csv),
+                    "saved": True,
+                }
+            ],
+        }
+    )
+
     return image_results
-
-
-def build_extracted_notebook(extracted_by_gp: list[tuple[str, str, str, str, list[dict]]]) -> dict:
-    cells = [
-        make_markdown_cell(
-            "# PCA Loading Cells\n\n"
-            "This notebook contains only the PCA loading cells extracted from the circuit notebooks.\n"
-            "It assumes that the PCA preparation cells from the original notebooks have already run."
-        )
-    ]
-
-    for grand_prix, _config_name, notebook_name, _circuit_label, cells_for_gp in extracted_by_gp:
-        cells.append(make_markdown_cell(f"## {grand_prix}\n\nSource notebook: `{notebook_name}`"))
-        if cells_for_gp:
-            cells.extend(cells_for_gp)
-        else:
-            cells.append(make_markdown_cell("_No PCA loading cells found._"))
-
-    return {
-        "cells": cells,
-        "metadata": {
-            "kernelspec": {
-                "display_name": "Python 3",
-                "language": "python",
-                "name": "python3",
-            },
-            "language_info": {
-                "name": "python",
-                "pygments_lexer": "ipython3",
-            },
-        },
-        "nbformat": 4,
-        "nbformat_minor": 5,
-    }
-
-
-def build_python_export(extracted_by_gp: list[tuple[str, str, str, str, list[dict]]]) -> str:
-    blocks = [
-        '"""PCA loading cells extracted from all circuit notebooks.',
-        "",
-        "This file is generated by Scripts/Source/extract_pca_loading_cells.py.",
-        '"""',
-        "",
-    ]
-
-    for grand_prix, _config_name, notebook_name, _circuit_label, cells_for_gp in extracted_by_gp:
-        blocks.append("# " + "=" * 78)
-        blocks.append(f"# {grand_prix} | {notebook_name}")
-        blocks.append("# " + "=" * 78)
-        blocks.append("")
-
-        for cell in cells_for_gp:
-            cell_index = cell.get("metadata", {}).get("source_cell_index", "unknown")
-            blocks.append(f"# Source cell: {cell_index}")
-            blocks.append(source_text(cell).rstrip())
-            blocks.append("")
-    return "\n".join(blocks).rstrip() + "\n"
 
 
 def main():
     args = parse_args()
     repo_root = repo_root_from_script()
-    notebooks_dir = resolve_repo_path(repo_root, args.notebooks_dir)
     output_dir = resolve_repo_path(repo_root, args.output_dir)
 
-    if not notebooks_dir.exists():
-        raise FileNotFoundError(f"Notebook directory not found: {notebooks_dir}")
-
-    extracted_by_gp = []
-    for grand_prix, config_name, notebook_name, circuit_label in DEFAULT_NOTEBOOKS:
-        notebook_path = notebooks_dir / notebook_name
-        if not notebook_path.exists():
-            raise FileNotFoundError(f"Notebook not found: {notebook_path}")
-        cells = extract_cells_from_notebook(notebook_path, keep_outputs=args.keep_outputs)
-        extracted_by_gp.append((grand_prix, config_name, notebook_name, circuit_label, cells))
-
     output_dir.mkdir(parents=True, exist_ok=True)
-    notebook_output_path = output_dir / "pca_loading_cells_all_gps.ipynb"
-    python_output_path = output_dir / "pca_loading_cells_all_gps.py"
-    manifest_output_path = output_dir / "pca_loading_cells_manifest.json"
+    manifest_output_path = output_dir / "pca_loading_manifest.json"
     images_manifest_output_path = output_dir / "pca_loading_images_manifest.json"
-
-    if not args.skip_cell_export:
-        extracted_notebook = build_extracted_notebook(extracted_by_gp)
-        notebook_output_path.write_text(json.dumps(extracted_notebook, indent=1), encoding="utf-8")
-        python_output_path.write_text(build_python_export(extracted_by_gp), encoding="utf-8")
 
     image_results = save_pca_loading_images(repo_root, output_dir)
     images_manifest_output_path.write_text(json.dumps(image_results, indent=2), encoding="utf-8")
 
     manifest = {
-        "match_terms": DEFAULT_MATCH_TERMS,
-        "keep_outputs": args.keep_outputs,
-        "notebooks": [
+        "description": "PCA loading plots generated directly from cleaned modeling datasets.",
+        "grand_prix": [
             {
                 "grand_prix": grand_prix,
                 "config": config_name,
-                "notebook": notebook_name,
-                "extracted_cells": len(cells),
-                "source_cell_indices": [
-                    cell.get("metadata", {}).get("source_cell_index") for cell in cells
-                ],
+                "circuit_label": circuit_label,
             }
-            for grand_prix, config_name, notebook_name, _circuit_label, cells in extracted_by_gp
+            for grand_prix, config_name, circuit_label in DEFAULT_GRAND_PRIX
         ],
         "outputs": {
-            "notebook": None if args.skip_cell_export else str(notebook_output_path),
-            "python": None if args.skip_cell_export else str(python_output_path),
             "manifest": str(manifest_output_path),
             "images_manifest": str(images_manifest_output_path),
+            "images": str(output_dir / "images"),
+            "top5_pc1_pc2_loadings_csv": str(output_dir / "top5_pc1_pc2_loadings_by_track.csv"),
+            "top5_pc1_pc2_loadings_png": str(output_dir / "top5_pc1_pc2_loadings_by_track.png"),
         },
     }
     manifest_output_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    print("--- PCA LOADING CELL EXTRACTION AND IMAGE EXPORT ---")
-    for grand_prix, _config_name, notebook_name, _circuit_label, cells in extracted_by_gp:
-        indices = [cell.get("metadata", {}).get("source_cell_index") for cell in cells]
-        print(f"{grand_prix}: {len(cells)} cells from {notebook_name} | indices={indices}")
+    print("--- PCA LOADING GENERATION ---")
     print("\nSaved PCA loading images:")
     for result in image_results:
         saved_count = sum(1 for image in result["images"] if image["saved"])
         print(f"{result['grand_prix']}: {saved_count} PNG files")
     print("\nOutputs:")
-    if not args.skip_cell_export:
-        print(f"- {notebook_output_path}")
-        print(f"- {python_output_path}")
     print(f"- {manifest_output_path}")
     print(f"- {images_manifest_output_path}")
     print(f"- {output_dir / 'images'}")
+    print(f"- {output_dir / 'top5_pc1_pc2_loadings_by_track.csv'}")
+    print(f"- {output_dir / 'top5_pc1_pc2_loadings_by_track.png'}")
 
 
 if __name__ == "__main__":

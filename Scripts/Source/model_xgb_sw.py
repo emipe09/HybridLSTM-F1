@@ -16,6 +16,7 @@ from modeling_utils import (
     align_one_hot,
     build_sequential_split,
     build_sliding_windows,
+    build_xgb_model_paths,
     build_xgb_params_path,
     calc_holdout_ci,
     calc_stats,
@@ -201,10 +202,36 @@ def main():
     )
 
     print("\n--- Training final XGBoost model ---")
-    dmodel_full, dholdout, _, _ = build_xgb_matrix(X_model_raw, X_holdout_raw, y_model, y_holdout, cat_cols)
+    dmodel_full, dholdout, X_model_enc, X_holdout_enc = build_xgb_matrix(
+        X_model_raw, X_holdout_raw, y_model, y_holdout, cat_cols
+    )
     final_model = xgb.train(params=train_params, dtrain=dmodel_full, num_boost_round=best_n, verbose_eval=False)
     print(f"Selected n_estimators: {best_n}")
     print(final_params)
+
+    model_path, model_metadata_path = build_xgb_model_paths(repo_root, config)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    final_model.save_model(str(model_path))
+    model_metadata = {
+        "target_gp_name": target_gp_name,
+        "model": "xgboost",
+        "model_path": str(model_path),
+        "params_path": str(params_path),
+        "target_col": target_col,
+        "lap_col": lap_col,
+        "numerical_features": num_cols,
+        "categorical_features": cat_cols,
+        "encoded_feature_names": list(X_model_enc.columns),
+        "median_imputation_values": {key: float(value) for key, value in X_model_enc.median(numeric_only=True).items()},
+        "training_block": "first_sequential_modeling_block",
+        "holdout_usage": "final sequential holdout is not used for training",
+        "best_n_estimators": best_n,
+        "train_params": train_params,
+        "final_params": final_params,
+    }
+    model_metadata_path.write_text(json.dumps(model_metadata, indent=2), encoding="utf-8")
+    print(f"Saved final XGBoost model to: {model_path}")
+    print(f"Saved final XGBoost model metadata to: {model_metadata_path}")
 
     results = {"window": [], "rmse": [], "mae": [], "r2": [], "std": []}
 
@@ -321,7 +348,7 @@ def main():
             "n_estimators": best_n,
             **final_params,
         },
-        artifacts=[params_path],
+        artifacts=[params_path, model_path, model_metadata_path],
     )
 
     print("\n--- Sliding-window summary (indicative CI) ---")

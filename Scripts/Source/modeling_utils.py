@@ -16,48 +16,6 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environme
     stats = None
 
 
-TARGET_COL = "LapTime_seconds"
-LAP_COL = "LapNumber"
-
-NUM_COLS_BASE = [
-    "TyreLife",
-    "LapNumber",
-    "Humidity_RBF_Median",
-    "Pressure_RBF_Median",
-    "TrackTemp_RBF_Median",
-    "WindSpeed_RBF_Median",
-    "TempDelta_RBF_Median",
-    "LapTime_prev",
-]
-
-CAT_COLS = ["Driver", "Team", "pirelliCompound", "Year"]
-
-DEFAULT_CONFIG = {
-    "target_gp_name": "Bahrain Grand Prix",
-    "data_dir": "Data",
-    "model_data_dir": "Scripts/ModelData",
-    "results_dir": "Scripts/Results",
-    "cleaned_data_filename_template": "{safe_gp_name}_cleaned_data.csv",
-    "xgb_params_subdir": "xgboost/sw/params",
-    "xgb_params_filename_template": "{safe_gp_name}_xgb_params_sw.json",
-    "target_col": TARGET_COL,
-    "lap_col": LAP_COL,
-    "numerical_features": NUM_COLS_BASE,
-    "categorical_features": CAT_COLS,
-    "holdout_ratio": 0.20,
-    "window_ratio": 0.20,
-    "window_train_ratio": 0.80,
-    "window_step_ratio": 0.20,
-    "alpha_cos": 0.50,
-    "beta_cos": 0.50,
-    "random_seed": 42,
-    "optuna_trials": 100,
-    "use_saved_xgb_params": True,
-    "mlflow_enabled": True,
-    "mlflow_tracking_uri": "Scripts/Results/mlruns",
-    "mlflow_experiment_name": "f1-lap-time-{safe_gp_name}",
-}
-
 CONFIG_ALIASES = {
     "bahrain_grand_prix": "bahrain.yaml",
     "saudi_arabian_grand_prix": "saudi.yaml",
@@ -65,6 +23,37 @@ CONFIG_ALIASES = {
     "italian_grand_prix": "italy.yaml",
     "hungarian_grand_prix": "hungary.yaml",
 }
+
+REQUIRED_CONFIG_KEYS = [
+    "target_gp_name",
+    "model_data_dir",
+    "results_dir",
+    "cleaned_data_filename_template",
+    "xgb_params_subdir",
+    "xgb_params_filename_template",
+    "xgb_models_subdir",
+    "xgb_model_filename_template",
+    "xgb_model_metadata_filename_template",
+    "lr_models_subdir",
+    "lr_model_filename_template",
+    "lr_model_metadata_filename_template",
+    "target_col",
+    "lap_col",
+    "numerical_features",
+    "categorical_features",
+    "holdout_ratio",
+    "window_ratio",
+    "window_train_ratio",
+    "window_step_ratio",
+    "alpha_cos",
+    "beta_cos",
+    "random_seed",
+    "optuna_trials",
+    "use_saved_xgb_params",
+    "mlflow_enabled",
+    "mlflow_tracking_uri",
+    "mlflow_experiment_name",
+]
 
 
 def safe_gp_name(gp_name: str) -> str:
@@ -109,13 +98,15 @@ def load_simple_yaml(path: Path) -> dict:
     return config
 
 
+def validate_config(config: dict, config_path: Path) -> None:
+    missing = [key for key in REQUIRED_CONFIG_KEYS if key not in config]
+    if missing:
+        joined_keys = ", ".join(missing)
+        raise KeyError(f"Missing required config key(s) in {config_path}: {joined_keys}")
+
+
 def load_config(repo_root: Path) -> tuple[dict, Path | None]:
-    config = DEFAULT_CONFIG.copy()
-
     env_target = os.environ.get("TARGET_GP_NAME")
-    if env_target:
-        config["target_gp_name"] = env_target
-
     env_config_path = os.environ.get("CONFIG_PATH")
     if env_config_path:
         config_path = Path(env_config_path)
@@ -123,15 +114,25 @@ def load_config(repo_root: Path) -> tuple[dict, Path | None]:
             config_path = repo_root / config_path
     else:
         config_dir = repo_root / "configs"
-        safe_name = safe_gp_name(str(config["target_gp_name"]))
+        if not env_target:
+            raise ValueError("Set CONFIG_PATH or TARGET_GP_NAME so the script can load the circuit YAML.")
+        safe_name = safe_gp_name(env_target)
         aliased_name = CONFIG_ALIASES.get(safe_name, f"{safe_name}.yaml")
         config_path = config_dir / aliased_name
 
-    if config_path.exists():
-        config.update(load_simple_yaml(config_path))
-        return config, config_path
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-    return config, None
+    config = load_simple_yaml(config_path)
+    validate_config(config, config_path)
+
+    if env_target and not env_config_path and str(config["target_gp_name"]) != env_target:
+        raise ValueError(
+            f"TARGET_GP_NAME={env_target!r} resolved to {config_path}, "
+            f"but the YAML target_gp_name is {config['target_gp_name']!r}."
+        )
+
+    return config, config_path
 
 
 def resolve_repo_path(repo_root: Path, path_value: str) -> Path:
@@ -159,6 +160,36 @@ def build_xgb_params_path(repo_root: Path, config: dict) -> Path:
         / str(config["xgb_params_subdir"])
         / filename
     )
+
+
+def build_xgb_model_paths(repo_root: Path, config: dict) -> tuple[Path, Path]:
+    target_gp_name = str(config["target_gp_name"])
+    safe_name = safe_gp_name(target_gp_name)
+    model_filename = str(config["xgb_model_filename_template"]).format(
+        target_gp_name=target_gp_name,
+        safe_gp_name=safe_name,
+    )
+    metadata_filename = str(config["xgb_model_metadata_filename_template"]).format(
+        target_gp_name=target_gp_name,
+        safe_gp_name=safe_name,
+    )
+    model_dir = resolve_repo_path(repo_root, str(config["results_dir"])) / str(config["xgb_models_subdir"])
+    return model_dir / model_filename, model_dir / metadata_filename
+
+
+def build_lr_model_paths(repo_root: Path, config: dict) -> tuple[Path, Path]:
+    target_gp_name = str(config["target_gp_name"])
+    safe_name = safe_gp_name(target_gp_name)
+    model_filename = str(config["lr_model_filename_template"]).format(
+        target_gp_name=target_gp_name,
+        safe_gp_name=safe_name,
+    )
+    metadata_filename = str(config["lr_model_metadata_filename_template"]).format(
+        target_gp_name=target_gp_name,
+        safe_gp_name=safe_name,
+    )
+    model_dir = resolve_repo_path(repo_root, str(config["results_dir"])) / str(config["lr_models_subdir"])
+    return model_dir / model_filename, model_dir / metadata_filename
 
 
 def resolve_mlflow_tracking_uri(repo_root: Path, config: dict) -> str:
@@ -285,10 +316,7 @@ def load_cleaned_data(script_path: Path) -> tuple[str, dict, Path, pd.DataFrame]
     target_gp_name = str(config["target_gp_name"])
     input_csv_path = build_cleaned_data_path(repo_root, config)
 
-    if config_path:
-        print(f"Using config:\n{config_path}")
-    else:
-        print("Using default configuration.")
+    print(f"Using config:\n{config_path}")
     print(f"Loading cleaned data from:\n{input_csv_path}")
     if not input_csv_path.exists():
         raise FileNotFoundError(f"File not found: {input_csv_path}")
@@ -297,10 +325,21 @@ def load_cleaned_data(script_path: Path) -> tuple[str, dict, Path, pd.DataFrame]
 
 
 def select_modeling_columns(df_base: pd.DataFrame, config: dict):
-    numerical_features = list(config.get("numerical_features", NUM_COLS_BASE))
-    categorical_features = list(config.get("categorical_features", CAT_COLS))
-    num_cols = [col for col in numerical_features if col in df_base.columns]
-    cat_cols = [col for col in categorical_features if col in df_base.columns]
+    numerical_features = list(config["numerical_features"])
+    categorical_features = list(config["categorical_features"])
+
+    def ordered_existing_unique(columns):
+        selected = []
+        seen = set()
+        for col in columns:
+            if col in seen or col not in df_base.columns:
+                continue
+            selected.append(col)
+            seen.add(col)
+        return selected
+
+    num_cols = ordered_existing_unique(numerical_features)
+    cat_cols = ordered_existing_unique(categorical_features)
     return num_cols, cat_cols
 
 
@@ -416,7 +455,7 @@ def build_sliding_windows(n_laps, window_ratio, train_ratio, step_ratio):
     return windows, window_size, train_size, val_size, step_size
 
 
-def build_sequential_split(df_base, valid_indices, holdout_ratio, lap_col=LAP_COL):
+def build_sequential_split(df_base, valid_indices, holdout_ratio, lap_col):
     if lap_col not in df_base.columns:
         raise KeyError(f"Column '{lap_col}' not found.")
 
