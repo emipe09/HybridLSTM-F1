@@ -13,10 +13,13 @@ $env:CONFIG_PATH = "configs/bahrain.yaml"
 .\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
 .\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
 .\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
+.\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py
 ```
 
-When `CONFIG_PATH` is not defined, the scripts fall back to the corresponding
-YAML file for the selected `TARGET_GP_NAME`, then to the built-in defaults.
+When `CONFIG_PATH` is not defined, the scripts load the corresponding YAML file
+for the selected `TARGET_GP_NAME`. There are no built-in modeling defaults; the
+YAML file is the source of truth for target, paths, features, split ratios,
+model settings, and tracking settings.
 
 Directory and file locations are also configured in YAML. The main path keys are:
 
@@ -62,6 +65,7 @@ Runs Linear Regression for the selected Grand Prix using:
 - categorical encoding fitted only on each training split/window
 - sliding-window validation over the modeling block
 - final sequential holdout evaluation
+- saved final model artifact and metadata for downstream interpretability
 
 ## `model_xgb_sw.py`
 
@@ -73,6 +77,36 @@ Runs XGBoost for the selected Grand Prix using:
 - Optuna tuning when no saved parameters are available
 - calibrated `n_estimators` from sliding-window early stopping
 - final sequential holdout evaluation
+- saved final booster artifact and metadata for downstream interpretability
+
+## `model_interpretability.py`
+
+Loads the saved final Linear Regression and XGBoost models for the selected
+Grand Prix. Linear Regression is interpreted through standardized encoded
+coefficients. XGBoost is interpreted through native feature importance and SHAP
+values, following the analysis pattern used in the notebooks.
+
+Run the model scripts first so the final model artifacts exist:
+
+```powershell
+$env:TARGET_GP_NAME = "Bahrain Grand Prix"
+.\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_interpretability.py
+.\.venv\Scripts\python.exe Scripts/Source/model_interpretability.py --force-index 518
+.\.venv\Scripts\python.exe Scripts/Source/model_interpretability.py --all
+```
+
+When `--force-index` is omitted, the force plot explains the modeling-block row
+whose XGBoost prediction is closest to the median modeling-block prediction.
+
+Outputs are written under `Scripts/Results/model_interpretability/` by default:
+
+- Linear Regression coefficient CSV and PNG
+- XGBoost feature-importance CSV and gain plot
+- XGBoost row-level SHAP values as CSV
+- XGBoost SHAP summary CSV, beeswarm PNG, bar PNG, force-plot PNG/HTML, and force-plot contribution CSV
+- manifest JSON linking the outputs to the saved source models
 
 ## `backward_elimination.py`
 
@@ -99,10 +133,57 @@ Outputs are written under `Scripts/Results/backward_elimination/` by default:
 - full-model versus reduced-model `R2`, RMSE, and MAE comparison in JSON
 - final OLS summary as text
 
+## `correlation_ablation_lr.py`
+
+Detects encoded-feature pairs with absolute correlation above the selected
+threshold inside the first sequential modeling block only. For each correlated
+pair, the script reruns the Linear Regression sliding-window and final
+sequential-holdout protocol twice: once removing the first feature and once
+removing the second feature. The holdout remains untouched when selecting the
+correlated pairs.
+
+```powershell
+$env:TARGET_GP_NAME = "Bahrain Grand Prix"
+.\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py
+.\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py --threshold 0.80 --all
+```
+
+Outputs are written under `Scripts/Results/correlation_ablation_lr/` by default:
+
+- correlated encoded-feature pairs as CSV
+- one-row-per-ablation results as CSV
+- baseline metrics, split metadata, and detected pairs as JSON
+
+## `regression_diagnostics_lr.py`
+
+Generates Linear Regression residual diagnostics after fitting preprocessing
+and the model on the first sequential modeling block. Residual plots,
+prediction tables, a standard statsmodels OLS summary, coefficient tables, and
+coefficient plots are produced for that retrained 80% modeling block; the final
+sequential holdout is not used by this diagnostic script and remains reserved
+for final evaluation.
+
+```powershell
+$env:TARGET_GP_NAME = "Bahrain Grand Prix"
+.\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py
+.\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py --all
+```
+
+Outputs are written under `Scripts/Results/regression_diagnostics/` by default:
+
+- modeling-block diagnostics as CSV
+- modeling-block coefficient estimates and p-values as CSV
+- standard statsmodels OLS summary as TXT
+- modeling-block summary metrics as JSON
+- regression-diagnostics panel as PNG
+- residual-distribution histogram as PNG
+- all encoded model coefficients as PNG
+
 ## `extract_pca_loading_cells.py`
 
-Extracts the PCA loading cells from all circuit notebooks and saves static
-2D PCA loading PNGs by Grand Prix and feature group:
+Generates static 2D PCA loading PNGs directly from the configured cleaned
+modeling datasets. The script follows the PCA logic previously used in the
+notebooks, but it does not read or extract notebook cells.
 
 ```powershell
 .\.venv\Scripts\python.exe Scripts/Source/extract_pca_loading_cells.py
@@ -110,11 +191,11 @@ Extracts the PCA loading cells from all circuit notebooks and saves static
 
 Outputs are written under `Scripts/Results/pca_loading_cells/` by default:
 
-- `pca_loading_cells_all_gps.ipynb`
-- `pca_loading_cells_all_gps.py`
-- `pca_loading_cells_manifest.json`
+- `pca_loading_manifest.json`
 - `pca_loading_images_manifest.json`
 - `images/<safe_gp_name>/pca_loadings_*.png`
+- `top5_pc1_pc2_loadings_by_track.csv`
+- `top5_pc1_pc2_loadings_by_track.png`
 
 ## `run_all_models.py`
 

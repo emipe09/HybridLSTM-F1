@@ -5,10 +5,16 @@ results_dir: "Scripts/Results"
 cleaned_data_filename_template: "{safe_gp_name}_cleaned_data.csv"
 xgb_params_subdir: "xgboost/sw/params"
 xgb_params_filename_template: "{safe_gp_name}_xgb_params_sw.json"
+xgb_models_subdir: "xgboost/sw/models"
+xgb_model_filename_template: "{safe_gp_name}_xgb_model_sw.json"
+xgb_model_metadata_filename_template: "{safe_gp_name}_xgb_model_sw_metadata.json"
+lr_models_subdir: "linear_regression/sw/models"
+lr_model_filename_template: "{safe_gp_name}_lr_model_sw.pkl"
+lr_model_metadata_filename_template: "{safe_gp_name}_lr_model_sw_metadata.json"
 target_col: "LapTime_seconds"
 lap_col: "LapNumber"
-numerical_features: [TyreLife, LapNumber, Humidity_RBF_Median, Pressure_RBF_Median, TrackTemp_RBF_Median, WindSpeed_RBF_Median, TempDelta_RBF_Median, LapTime_prev]
-categorical_features: [Driver, Team, pirelliCompound, Year]
+numerical_features: [TyreLife, LapNumber, Humidity_RBF_Median, Pressure_RBF_Median, Year, WindSpeed_RBF_Median, TempDelta_RBF_Median, LapTime_prev]
+categorical_features: [Driver, Team, pirelliCompound]
 holdout_ratio: 0.20
 window_ratio: 0.20
 window_train_ratio: 0.80

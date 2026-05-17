@@ -9,7 +9,7 @@ The main goal is to model `LapTime_seconds` using FastF1-derived race data, with
 - sliding-window validation inside the first 80% of ordered laps;
 - final sequential holdout on the last 20% of ordered laps;
 - comparison between Linear Regression and XGBoost models;
-- reporting of RMSE, MAE, R², residual standard deviation, COS_MAE and COS_RMSE.
+- reporting of RMSE, MAE, R2, residual standard deviation, COS_MAE and COS_RMSE.
 
 This is an academic/research project. Prioritize reproducibility, methodological consistency, clean code and clear experiment reporting.
 
@@ -62,6 +62,8 @@ Main scripts:
 
 - Keep notebook pipelines clean and consistent with the separated model scripts.
 - Notebooks and model scripts must produce equivalent results when using the same data, configuration and random seed.
+- Any methodological change made in the reproducible scripts must be reflected in the related notebooks before the task is considered complete.
+- Notebook code, outputs and markdown must tell the same methodological story as the scripts, including feature removals, validation protocol, interpretability steps and reported metrics.
 - Avoid duplicated logic between notebooks and scripts.
 - When possible, move reusable logic to shared functions or modules.
 - If a script is updated, verify whether related notebooks need the same methodological update.
@@ -159,6 +161,7 @@ Numerical features currently used:
 - `TrackTemp_RBF_Median`
 - `WindSpeed_RBF_Median`
 - `TempDelta_RBF_Median`
+- `Year`
 - `LapTime_prev`
 
 Categorical features currently used:
@@ -166,13 +169,41 @@ Categorical features currently used:
 - `Driver`
 - `Team`
 - `pirelliCompound`
-- `Year`
 
 Target:
 
 - `LapTime_seconds`
 
+`Year` is a numerical feature, not a categorical feature. Do not one-hot encode
+`Year` unless a future methodological change explicitly justifies and documents
+that decision.
+
 Do not add or remove features without explaining the methodological impact.
+
+### Circuit-specific feature removals
+
+The current article-facing feature sets include circuit-specific removals based
+on correlation and PCA-loading analysis. Preserve these removals unless the user
+explicitly requests a new feature-selection experiment:
+
+- United States Grand Prix:
+  - remove `TempDelta_RBF_Median`;
+  - remove `Year`;
+  - keep `TrackTemp_RBF_Median` as the more physically interpretable thermal/grip proxy.
+- Saudi Arabian Grand Prix:
+  - remove `TrackTemp_RBF_Median`;
+  - keep `Pressure_RBF_Median` as the retained atmospheric-state proxy.
+- Hungarian Grand Prix:
+  - remove `Humidity_RBF_Median`;
+  - keep `TrackTemp_RBF_Median` as the retained track-surface thermal proxy.
+- Bahrain Grand Prix and Italian Grand Prix:
+  - no circuit-specific removals are currently applied beyond the configured feature lists.
+
+These removals affect modeling scripts, interpretability outputs, PCA/correlation
+analysis, README descriptions and notebook narrative. If any removal is changed
+in YAML or code, update the corresponding notebook code, notebook markdown,
+script documentation and result interpretation together.
+
 
 ## Linear Regression
 
@@ -198,11 +229,11 @@ Keep reporting:
 
 - sliding-window RMSE;
 - sliding-window MAE;
-- sliding-window R²;
+- sliding-window R2;
 - sliding-window residual standard deviation;
 - final sequential-holdout RMSE;
 - final sequential-holdout MAE;
-- final sequential-holdout R²;
+- final sequential-holdout R2;
 - bootstrap confidence intervals for holdout metrics when present;
 - COS_MAE;
 - COS_RMSE.
@@ -250,6 +281,7 @@ This repository supports a paper/TCC. When changing code:
 - preserve methodological consistency;
 - avoid changes that make previous results incomparable;
 - explain changes that affect reported metrics;
+- explicitly state when a result changed because of feature-set revisions, such as circuit-specific removals;
 - prefer deterministic behavior where possible;
 - set random seeds when using stochastic methods;
 - avoid optimistic evaluation protocols.
@@ -266,6 +298,7 @@ This repository supports a paper/TCC. When changing code:
 - Removing COS metrics.
 - Replacing the experiment protocol with cross-validation that ignores race order.
 - Leaving notebooks inconsistent with scripts.
+- Changing script methodology without updating the corresponding notebooks.
 - Leaving README or notebook markdown outdated after code changes.
 - Duplicating metric calculation logic across multiple files.
 
@@ -281,4 +314,5 @@ When asked to modify the project:
 6. Reuse shared functions for metrics and repeated logic.
 7. Update README and notebook markdown when the change affects them.
 8. Explain any impact on metrics, leakage risk or reproducibility.
-9. Avoid unnecessary formatting-only diffs.
+9. For methodological changes, update the relevant notebooks so the narrative, code and outputs match the scripts.
+10. Avoid unnecessary formatting-only diffs.
