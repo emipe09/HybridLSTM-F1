@@ -113,20 +113,48 @@ parameter JSON when it exists. The default local tracking directory is
 
 ## Installation
 
+Create and activate a virtual environment before installing dependencies.
+
+Linux/macOS:
+
 ```bash
-pip install -r Utils/requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r Utils/requirements.txt
 ```
 
-On Windows/PowerShell, prefer installing with the same Python interpreter that
-will run the scripts:
+Windows/PowerShell:
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r Utils/requirements.txt
+```
+
+If you do not use a virtual environment, install dependencies with the same
+Python interpreter that will run the scripts:
+
+```bash
 python -m pip install -r Utils/requirements.txt
 ```
 
 ## Running a Model
 
-PowerShell:
+Select a configuration file directly.
+
+Linux/macOS:
+
+```bash
+export CONFIG_PATH="configs/bahrain.yaml"
+python Scripts/Source/model_lr_sw.py
+python Scripts/Source/model_xgb_sw.py
+python Scripts/Source/model_interpretability.py
+python Scripts/Source/backward_elimination.py
+python Scripts/Source/correlation_ablation_lr.py
+python Scripts/Source/regression_diagnostics_lr.py
+```
+
+Windows/PowerShell:
 
 ```powershell
 $env:CONFIG_PATH = "configs/bahrain.yaml"
@@ -147,6 +175,14 @@ resolved from the repository root.
 To inspect the experiment history locally, start the MLflow UI from the
 repository root after running at least one model:
 
+Linux/macOS:
+
+```bash
+python -m mlflow ui --backend-store-uri Scripts/Results/mlruns
+```
+
+Windows/PowerShell:
+
 ```powershell
 python -m mlflow ui --backend-store-uri Scripts/Results/mlruns
 ```
@@ -155,14 +191,7 @@ Then open the URL printed by MLflow, usually `http://127.0.0.1:5000`.
 
 Alternatively, select a Grand Prix directly:
 
-```powershell
-$env:TARGET_GP_NAME = "Bahrain Grand Prix"
-.\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
-.\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
-.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
-```
-
-Bash:
+Linux/macOS:
 
 ```bash
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_sw.py
@@ -173,13 +202,46 @@ TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/correlation_ablation_l
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/regression_diagnostics_lr.py
 ```
 
+Windows/PowerShell:
+
+```powershell
+$env:TARGET_GP_NAME = "Bahrain Grand Prix"
+.\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_interpretability.py
+.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
+.\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py
+.\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py
+```
+
+On Linux/macOS, paths are case-sensitive. Run commands from the repository root
+and keep directory names exactly as shown, for example `Scripts/Source/` rather
+than `scripts/source/`.
+
 To run all configured Grand Prix events and both model families in sequence:
+
+Linux/macOS:
+
+```bash
+python Scripts/Source/run_all_models.py
+```
+
+Windows/PowerShell:
 
 ```powershell
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py
 ```
 
 You can limit the batch run to one model family:
+
+Linux/macOS:
+
+```bash
+python Scripts/Source/run_all_models.py --models lr
+python Scripts/Source/run_all_models.py --models xgb
+```
+
+Windows/PowerShell:
 
 ```powershell
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models lr
@@ -192,6 +254,14 @@ Backward-elimination outputs are generated under
 `Scripts/Results/backward_elimination/` and are ignored by Git.
 To run backward elimination for every configured Grand Prix:
 
+Linux/macOS:
+
+```bash
+python Scripts/Source/backward_elimination.py --all
+```
+
+Windows/PowerShell:
+
 ```powershell
 .\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py --all
 ```
@@ -199,6 +269,14 @@ To run backward elimination for every configured Grand Prix:
 Correlation-ablation outputs are generated under
 `Scripts/Results/correlation_ablation_lr/` and are ignored by Git. To run the
 correlated-feature ablation for every configured Grand Prix:
+
+Linux/macOS:
+
+```bash
+python Scripts/Source/correlation_ablation_lr.py --all
+```
+
+Windows/PowerShell:
 
 ```powershell
 .\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py --all
@@ -212,6 +290,14 @@ plots, prediction tables, a standard statsmodels OLS summary, and coefficient
 plots are produced for that retrained 80% modeling block. The final 20% holdout
 remains unused by the diagnostic script and is reserved for final model
 evaluation. To run the diagnostics for every configured Grand Prix:
+
+Linux/macOS:
+
+```bash
+python Scripts/Source/regression_diagnostics_lr.py --all
+```
+
+Windows/PowerShell:
 
 ```powershell
 .\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py --all

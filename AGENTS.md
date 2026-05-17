@@ -133,6 +133,10 @@ Update the README whenever a change affects:
 - data collection flow.
 
 The README must always remain consistent with the current state of the project.
+Whenever new command-line instructions are added to the README, include the
+Linux/macOS command form as well as the Windows/PowerShell form when both are
+relevant. Keep environment-variable syntax, virtual-environment activation, and
+path separators appropriate for each platform.
 
 ## Notebook markdown maintenance
 
