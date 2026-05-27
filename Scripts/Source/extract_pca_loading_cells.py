@@ -30,6 +30,23 @@ DEFAULT_GRAND_PRIX = [
 ]
 
 
+REQUESTED_FEATURE_LOADINGS = {
+    "USA": [
+        "TrackTemp_RBF_Median",
+        "Year",
+        "TempDelta_RBF_Median",
+    ],
+    "Saudi Arabia": [
+        "Pressure_RBF_Median",
+        "TrackTemp_RBF_Median",
+    ],
+    "Hungary": [
+        "TrackTemp_RBF_Median",
+        "Humidity_RBF_Median",
+    ],
+}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate PCA loading plots from cleaned model datasets for all configured Grand Prix."
@@ -214,6 +231,87 @@ def top_component_loadings(
     return rows
 
 
+def pc1_pc2_loading_rows(pca: PCA, feature_names: pd.Index, grand_prix: str, circuit_label: str) -> list[dict]:
+    loadings = pca.components_.T
+    rows = []
+    for feature_index, feature in enumerate(feature_names):
+        pc1_loading = float(loadings[feature_index, 0])
+        pc2_loading = float(loadings[feature_index, 1])
+        rows.append(
+            {
+                "grand_prix": grand_prix,
+                "circuit_label": circuit_label,
+                "feature": str(feature),
+                "feature_label": compact_feature_label(str(feature)),
+                "pc1_loading": pc1_loading,
+                "pc2_loading": pc2_loading,
+                "pc1_abs_loading": abs(pc1_loading),
+                "pc2_abs_loading": abs(pc2_loading),
+            }
+        )
+    return rows
+
+
+def requested_pc1_pc2_loading_rows(
+    pca: PCA,
+    feature_names: pd.Index,
+    grand_prix: str,
+    circuit_label: str,
+) -> list[dict]:
+    loadings = pca.components_.T
+    rows = []
+    for feature in REQUESTED_FEATURE_LOADINGS.get(circuit_label, []):
+        row = {
+            "grand_prix": grand_prix,
+            "circuit_label": circuit_label,
+            "feature": feature,
+            "feature_label": compact_feature_label(feature),
+            "pc1_loading": np.nan,
+            "pc2_loading": np.nan,
+            "pc1_abs_loading": np.nan,
+            "pc2_abs_loading": np.nan,
+            "status": "not_in_current_pca_feature_set",
+        }
+        if feature in feature_names:
+            feature_index = feature_names.get_loc(feature)
+            pc1_loading = float(loadings[feature_index, 0])
+            pc2_loading = float(loadings[feature_index, 1])
+            row.update(
+                {
+                    "pc1_loading": pc1_loading,
+                    "pc2_loading": pc2_loading,
+                    "pc1_abs_loading": abs(pc1_loading),
+                    "pc2_abs_loading": abs(pc2_loading),
+                    "status": "available",
+                }
+            )
+        rows.append(row)
+    return rows
+
+
+def explained_variance_rows(pca: PCA, grand_prix: str, circuit_label: str) -> list[dict]:
+    explained_ratio = np.asarray(pca.explained_variance_ratio_, dtype=float)
+    cumulative_ratio = np.cumsum(explained_ratio)
+    rows = []
+    for component_index, (individual, cumulative) in enumerate(
+        zip(explained_ratio, cumulative_ratio),
+        start=1,
+    ):
+        rows.append(
+            {
+                "grand_prix": grand_prix,
+                "circuit_label": circuit_label,
+                "component": f"PC{component_index}",
+                "component_index": component_index,
+                "explained_variance_ratio": individual,
+                "explained_variance_percent": individual * 100.0,
+                "cumulative_variance_ratio": cumulative,
+                "cumulative_variance_percent": cumulative * 100.0,
+            }
+        )
+    return rows
+
+
 def plot_grouped_top_component_loadings(loadings_df: pd.DataFrame, output_path: Path, top_n: int = 5) -> None:
     circuits = list(dict.fromkeys(loadings_df["circuit_label"]))
     colors = ["#2f6f9f", "#d55e00", "#009e73", "#cc79a7", "#f0b429"]
@@ -265,9 +363,58 @@ def plot_grouped_top_component_loadings(loadings_df: pd.DataFrame, output_path: 
     plt.close(fig)
 
 
+def plot_explained_variance_for_track(
+    variance_df: pd.DataFrame,
+    circuit_label: str,
+    output_path: Path,
+    max_components: int = 10,
+) -> None:
+    plot_df = variance_df[variance_df["component_index"] <= max_components].copy()
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.bar(
+        plot_df["component"],
+        plot_df["explained_variance_percent"],
+        color="#2f6f9f",
+        edgecolor="#1f3f5b",
+        linewidth=0.8,
+    )
+
+    for bar, value in zip(bars, plot_df["explained_variance_percent"]):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.15,
+            f"{value:.1f}%",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    ax.plot(
+        plot_df["component"],
+        plot_df["cumulative_variance_percent"],
+        color="#d55e00",
+        marker="o",
+        linewidth=1.8,
+        label="Cumulative variance",
+    )
+    ax.set_title(f"PCA explained variance - {circuit_label}")
+    ax.set_xlabel("Principal component")
+    ax.set_ylabel("Explained variance (%)")
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    ax.set_ylim(0, max(plot_df["cumulative_variance_percent"].max() * 1.08, 10))
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def save_pca_loading_images(repo_root: Path, output_dir: Path) -> list[dict]:
     image_results = []
     top_loading_rows = []
+    all_pc1_pc2_loading_rows = []
+    requested_loading_rows = []
+    explained_variance_data = []
     images_root = output_dir / "images"
 
     for grand_prix, config_name, circuit_label in DEFAULT_GRAND_PRIX:
@@ -279,6 +426,12 @@ def save_pca_loading_images(repo_root: Path, output_dir: Path) -> list[dict]:
         pca, feature_names = prepare_pca_inputs(laps_cleaned, config)
         groups = pca_loading_groups(feature_names)
         top_loading_rows.extend(top_component_loadings(pca, feature_names, grand_prix, circuit_label))
+        all_pc1_pc2_loading_rows.extend(pc1_pc2_loading_rows(pca, feature_names, grand_prix, circuit_label))
+        requested_loading_rows.extend(
+            requested_pc1_pc2_loading_rows(pca, feature_names, grand_prix, circuit_label)
+        )
+        gp_explained_variance_rows = explained_variance_rows(pca, grand_prix, circuit_label)
+        explained_variance_data.extend(gp_explained_variance_rows)
 
         gp_output_dir = images_root / safe_gp_name(grand_prix)
         gp_output_dir.mkdir(parents=True, exist_ok=True)
@@ -312,6 +465,21 @@ def save_pca_loading_images(repo_root: Path, output_dir: Path) -> list[dict]:
                 }
             )
 
+        explained_variance_output_path = gp_output_dir / f"{slugify('PCA Explained Variance ' + circuit_label)}.png"
+        plot_explained_variance_for_track(
+            pd.DataFrame(gp_explained_variance_rows),
+            circuit_label,
+            explained_variance_output_path,
+        )
+        gp_result["images"].append(
+            {
+                "group": "explained_variance",
+                "title": f"PCA Explained Variance - {circuit_label}",
+                "path": str(explained_variance_output_path),
+                "saved": True,
+            }
+        )
+
         image_results.append(gp_result)
 
     top_loadings_df = pd.DataFrame(top_loading_rows)
@@ -319,6 +487,19 @@ def save_pca_loading_images(repo_root: Path, output_dir: Path) -> list[dict]:
     top_loadings_png = output_dir / "top5_pc1_pc2_loadings_by_track.png"
     top_loadings_df.to_csv(top_loadings_csv, index=False)
     plot_grouped_top_component_loadings(top_loadings_df, top_loadings_png)
+
+    all_pc1_pc2_loadings_df = pd.DataFrame(all_pc1_pc2_loading_rows)
+    all_pc1_pc2_loadings_csv = output_dir / "pc1_pc2_loadings_by_track.csv"
+    all_pc1_pc2_loadings_df.to_csv(all_pc1_pc2_loadings_csv, index=False)
+
+    requested_loadings_df = pd.DataFrame(requested_loading_rows)
+    requested_loadings_csv = output_dir / "requested_pc1_pc2_loadings_by_track.csv"
+    requested_loadings_df.to_csv(requested_loadings_csv, index=False)
+
+    explained_variance_df = pd.DataFrame(explained_variance_data)
+    explained_variance_csv = output_dir / "pca_explained_variance_by_track.csv"
+    explained_variance_df.to_csv(explained_variance_csv, index=False)
+
     image_results.append(
         {
             "grand_prix": "all",
@@ -328,6 +509,26 @@ def save_pca_loading_images(repo_root: Path, output_dir: Path) -> list[dict]:
                     "title": "Top 5 PC1 and PC2 Loadings by Track",
                     "path": str(top_loadings_png),
                     "data": str(top_loadings_csv),
+                    "saved": True,
+                }
+            ],
+            "data": [
+                {
+                    "group": "pc1_pc2_loadings_by_track",
+                    "title": "All PC1 and PC2 Loadings by Track",
+                    "path": str(all_pc1_pc2_loadings_csv),
+                    "saved": True,
+                },
+                {
+                    "group": "requested_pc1_pc2_loadings_by_track",
+                    "title": "Requested PC1 and PC2 Loadings by Track",
+                    "path": str(requested_loadings_csv),
+                    "saved": True,
+                },
+                {
+                    "group": "explained_variance_by_track",
+                    "title": "PCA Explained Variance by Track",
+                    "path": str(explained_variance_csv),
                     "saved": True,
                 }
             ],
@@ -365,6 +566,10 @@ def main():
             "images": str(output_dir / "images"),
             "top5_pc1_pc2_loadings_csv": str(output_dir / "top5_pc1_pc2_loadings_by_track.csv"),
             "top5_pc1_pc2_loadings_png": str(output_dir / "top5_pc1_pc2_loadings_by_track.png"),
+            "pc1_pc2_loadings_csv": str(output_dir / "pc1_pc2_loadings_by_track.csv"),
+            "requested_pc1_pc2_loadings_csv": str(output_dir / "requested_pc1_pc2_loadings_by_track.csv"),
+            "explained_variance_csv": str(output_dir / "pca_explained_variance_by_track.csv"),
+            "explained_variance_images": str(output_dir / "images" / "<safe_gp_name>"),
         },
     }
     manifest_output_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -380,6 +585,10 @@ def main():
     print(f"- {output_dir / 'images'}")
     print(f"- {output_dir / 'top5_pc1_pc2_loadings_by_track.csv'}")
     print(f"- {output_dir / 'top5_pc1_pc2_loadings_by_track.png'}")
+    print(f"- {output_dir / 'pc1_pc2_loadings_by_track.csv'}")
+    print(f"- {output_dir / 'requested_pc1_pc2_loadings_by_track.csv'}")
+    print(f"- {output_dir / 'pca_explained_variance_by_track.csv'}")
+    print(f"- {output_dir / 'images' / '<safe_gp_name>' / 'pca_explained_variance_*.png'}")
 
 
 if __name__ == "__main__":

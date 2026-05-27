@@ -250,9 +250,9 @@ def main():
     print(f"MAE:  {mae_holdout:.4f} | 95% CI: [{holdout_ci['mae'][0]:.4f}, {holdout_ci['mae'][1]:.4f}]")
     print(f"R2:   {r2_holdout:.4f} | 95% CI: [{holdout_ci['r2'][0]:.4f}, {holdout_ci['r2'][1]:.4f}]")
     print(f"COS_MAE:  {cos['cos_mae']:.4f} | 95% CI: [{cos['cos_mae_ci'][0]:.4f}, {cos['cos_mae_ci'][1]:.4f}]")
-    print(f"          MAE SW/final={cos['mae_sw']:.4f}/{cos['mae_final']:.4f} | STD SW/final={cos['std_sw']:.4f}/{cos['std_final']:.4f}")
+    print(f"          MAE final/SW={cos['mae_final']:.4f}/{cos['mae_sw']:.4f} | STD final/SW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
     print(f"COS_RMSE: {cos['cos_rmse']:.4f} | 95% CI: [{cos['cos_rmse_ci'][0]:.4f}, {cos['cos_rmse_ci'][1]:.4f}]")
-    print(f"          RMSE SW/final={cos['rmse_sw']:.4f}/{cos['rmse_final']:.4f} | STD SW/final={cos['std_sw']:.4f}/{cos['std_final']:.4f}")
+    print(f"          RMSE final/SW={cos['rmse_final']:.4f}/{cos['rmse_sw']:.4f} | STD final/SW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
 
     print("\n--- Final model coefficients ---")
     coefs = pd.Series(final_model.coef_, index=feature_names)

@@ -74,8 +74,12 @@ Runs XGBoost for the selected Grand Prix using:
 - one-hot encoding with all categories retained
 - median imputation for numerical predictors
 - categorical encoding fitted only on each training split/window
-- Optuna tuning when no saved parameters are available
-- calibrated `n_estimators` from sliding-window early stopping
+- per-window Optuna tuning when no saved parameters are available for the current search-space version, tuning strategy, YAML bounds, and sampler
+- independent Optuna studies inside each sliding window, with `optuna_trials` interpreted as trials per window
+- Optuna selection inside each window based exclusively on validation RMSE
+- final holdout hyperparameters aggregated as the median of the best Optuna parameters from all sliding windows
+- final `n_estimators` calibrated as the median early-stopping iteration across all sliding windows
+- saved per-window parameter summaries and per-trial CSV files for search-space auditing
 - final sequential holdout evaluation
 - saved final booster artifact and metadata for downstream interpretability
 
@@ -194,8 +198,12 @@ Outputs are written under `Scripts/Results/pca_loading_cells/` by default:
 - `pca_loading_manifest.json`
 - `pca_loading_images_manifest.json`
 - `images/<safe_gp_name>/pca_loadings_*.png`
+- `images/<safe_gp_name>/pca_explained_variance_*.png`
 - `top5_pc1_pc2_loadings_by_track.csv`
 - `top5_pc1_pc2_loadings_by_track.png`
+- `pc1_pc2_loadings_by_track.csv`
+- `requested_pc1_pc2_loadings_by_track.csv`
+- `pca_explained_variance_by_track.csv`
 
 ## `run_all_models.py`
 
@@ -229,8 +237,8 @@ metric calculation, bootstrap confidence intervals, and COS reporting helpers.
 Both scripts report:
 
 ```text
-COS_MAE  = 0.5 * (MAE_SW / MAE_final)  + 0.5 * (STD_SW / STD_final)
-COS_RMSE = 0.5 * (RMSE_SW / RMSE_final) + 0.5 * (STD_SW / STD_final)
+COS_MAE  = 0.5 * (MAE_final / MAE_SW)  + 0.5 * (STD_final / STD_SW)
+COS_RMSE = 0.5 * (RMSE_final / RMSE_SW) + 0.5 * (STD_final / STD_SW)
 ```
 
 The confidence intervals for COS are indicative because the sliding windows overlap.

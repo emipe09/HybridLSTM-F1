@@ -423,10 +423,10 @@ def calc_cos_metric(error_sliding, error_final, std_sliding, std_final, alpha=0.
     std_sliding = float(std_sliding)
     std_final = float(std_final)
 
-    if np.isclose(error_final, 0) or np.isclose(std_final, 0):
+    if np.isclose(error_sliding, 0) or np.isclose(std_sliding, 0):
         return np.nan, error_sliding, error_final, std_sliding, std_final
 
-    cos_value = alpha * (error_sliding / error_final) + beta * (std_sliding / std_final)
+    cos_value = alpha * (error_final / error_sliding) + beta * (std_final / std_sliding)
     return cos_value, error_sliding, error_final, std_sliding, std_final
 
 
@@ -491,11 +491,11 @@ def summarize_cos(results, mae_m, rmse_m, mae_holdout, rmse_holdout, std_m, std_
         rmse_m, rmse_holdout, std_m, std_holdout, alpha=alpha_cos, beta=beta_cos
     )
 
-    cos_mae_windows = alpha_cos * (np.array(results["mae"]) / mae_holdout) + beta_cos * (
-        np.array(results["std"]) / std_holdout
+    cos_mae_windows = alpha_cos * (mae_holdout / np.array(results["mae"])) + beta_cos * (
+        std_holdout / np.array(results["std"])
     )
-    cos_rmse_windows = alpha_cos * (np.array(results["rmse"]) / rmse_holdout) + beta_cos * (
-        np.array(results["std"]) / std_holdout
+    cos_rmse_windows = alpha_cos * (rmse_holdout / np.array(results["rmse"])) + beta_cos * (
+        std_holdout / np.array(results["std"])
     )
     _, cos_mae_l, cos_mae_u = calc_stats(cos_mae_windows)
     _, cos_rmse_l, cos_rmse_u = calc_stats(cos_rmse_windows)

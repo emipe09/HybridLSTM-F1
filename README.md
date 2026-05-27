@@ -76,7 +76,7 @@ Each notebook is written in English and follows the same structure: data prepara
 The reproducible modeling and feature-selection scripts are kept in `Scripts/Source/`:
 
 - `model_lr_sw.py`: Linear Regression with median imputation, standard scaling, sliding-window validation, and sequential holdout.
-- `model_xgb_sw.py`: XGBoost with Optuna hyperparameter tuning, sliding-window validation, and sequential holdout.
+- `model_xgb_sw.py`: XGBoost with regularized Optuna hyperparameter tuning, sliding-window validation, and sequential holdout.
 - `model_interpretability.py`: unified interpretability runner that loads the saved Linear Regression and XGBoost models, then exports LR coefficients, XGBoost feature importance, XGBoost SHAP values, and a local SHAP force plot.
 - `backward_elimination.py`: p-value based backward elimination for the Linear Regression design matrix, fitted only on the first sequential modeling block.
 - `correlation_ablation_lr.py`: Linear Regression ablation runner that detects encoded-feature pairs with `|r| >= 0.80` inside the modeling block, then reruns the full sliding-window and sequential-holdout protocol after removing one feature from each pair.
@@ -98,8 +98,8 @@ Both scripts report:
 The COS metrics are computed as:
 
 ```text
-COS_MAE  = 0.5 * (MAE_SW / MAE_final)  + 0.5 * (STD_SW / STD_final)
-COS_RMSE = 0.5 * (RMSE_SW / RMSE_final) + 0.5 * (STD_SW / STD_final)
+COS_MAE  = 0.5 * (MAE_final / MAE_SW)  + 0.5 * (STD_final / STD_SW)
+COS_RMSE = 0.5 * (RMSE_final / RMSE_SW) + 0.5 * (STD_final / STD_SW)
 ```
 
 The COS confidence intervals are descriptive because the sliding windows overlap.
@@ -110,6 +110,11 @@ sliding-window metrics, holdout metrics, COS metrics, and JSON artifacts for the
 configuration and per-window results. XGBoost runs also log the generated
 parameter JSON when it exists. The default local tracking directory is
 `Scripts/Results/mlruns`, which is treated as generated output.
+
+Detailed generated-result documentation is maintained in
+`Scripts/Results/README.md`, including the latest saved XGBoost final
+hyperparameters, the best validation window for each Grand Prix, and the
+per-window Optuna-selected hyperparameters with seed, sampler and trial count.
 
 ## Installation
 
@@ -167,8 +172,9 @@ $env:CONFIG_PATH = "configs/bahrain.yaml"
 ```
 
 The YAML files control the Grand Prix name, target column, lap column, feature
-lists, validation ratios, COS coefficients, random seed, Optuna settings, and
-MLflow tracking settings, and directory/file paths such as `model_data_dir`,
+lists, validation ratios, COS coefficients, random seed, Optuna settings,
+Grand Prix-specific XGBoost search-space bounds, and MLflow tracking settings,
+and directory/file paths such as `model_data_dir`,
 `results_dir`, and the cleaned dataset filename template. Relative paths are
 resolved from the repository root.
 
@@ -248,8 +254,19 @@ Windows/PowerShell:
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models xgb
 ```
 
-If an XGBoost parameter file is not available for a circuit, the XGBoost script
-will run Optuna before training, so the full batch may take substantially longer.
+If an XGBoost parameter file is not available for a circuit, or if the saved
+parameters do not match the current search-space version, tuning strategy, YAML
+bounds, or sampler, the XGBoost script will run Optuna before
+training, so the full batch may take substantially longer. The current XGBoost
+tuning protocol runs an independent Optuna study for each sliding window inside
+the first 80% modeling block; `optuna_trials` is therefore interpreted as trials
+per window. Each study minimizes validation RMSE. Final hyperparameters are the
+median of the best Optuna parameters selected in all sliding windows, with
+integer parameters rounded to the nearest integer. Final `n_estimators` is the
+median early-stopping iteration across those same windows. The untouched
+sequential holdout is evaluated only after this selection is complete.
+XGBoost searches also export a
+per-trial CSV with the source window for auditability.
 Backward-elimination outputs are generated under
 `Scripts/Results/backward_elimination/` and are ignored by Git.
 To run backward elimination for every configured Grand Prix:
