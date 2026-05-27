@@ -98,8 +98,8 @@ Both scripts report:
 The COS metrics are computed as:
 
 ```text
-COS_MAE  = 0.5 * (MAE_final / MAE_SW)  + 0.5 * (STD_final / STD_SW)
-COS_RMSE = 0.5 * (RMSE_final / RMSE_SW) + 0.5 * (STD_final / STD_SW)
+COS_MAE  = 0.5 * (MAE_SW / MAE_final)  + 0.5 * (STD_SW / STD_final)
+COS_RMSE = 0.5 * (RMSE_SW / RMSE_final) + 0.5 * (STD_SW / STD_final)
 ```
 
 The COS confidence intervals are descriptive because the sliding windows overlap.
@@ -115,17 +115,40 @@ parameter JSON when it exists. The default local tracking directory is
 
 The tables below summarize the latest saved XGBoost parameter artifacts from `Scripts/Results/xgboost/sw/params/`. They are kept in this root README because `Scripts/Results/` is treated as generated output and is normally ignored by Git.
 
-These values are generated outputs, not source-code defaults. If a Grand Prix configuration, search space, sampler, tuning strategy, or saved parameter JSON changes, regenerate or review these tables before using them in the paper.
+These values are generated outputs, not source-code defaults. If a Grand Prix configuration, search space, sampler, or saved parameter JSON changes, regenerate or review these tables before using them in the paper.
+
+XGBoost tuning is performed separately for each sliding-window validation fold
+inside the first 80% modeling block. For each fold, Optuna uses the configured
+TPE sampler and runs 200 trials to minimize validation RMSE. The final
+sequential holdout is not used during this selection stage. After all window
+studies are complete, the final model uses the median of the best
+window-specific hyperparameters; integer-valued parameters are rounded to the
+nearest integer, and `n_estimators` is taken as the median early-stopping
+iteration observed across the tuned windows. This keeps hyperparameter
+selection tied to the same temporal validation protocol used for model
+assessment.
+
+### XGBoost Search Space by Grand Prix
+
+All ranges are inclusive and are read from the circuit YAML configuration files.
+
+| Grand Prix | learning_rate | max_depth | min_child_weight | subsample | colsample_bytree | gamma | reg_alpha | reg_lambda |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Bahrain Grand Prix | 0.020-0.070 | 3-5 | 2-8 | 0.55-0.75 | 0.82-0.98 | 0.05-1.50 | 0.00000001-0.01 | 0.00000001-0.10 |
+| Saudi Arabian Grand Prix | 0.025-0.060 | 8-10 | 1-5 | 0.55-0.70 | 0.82-0.90 | 0.05-0.60 | 0.00010-0.10 | 0.00010-0.020 |
+| United States Grand Prix | 0.045-0.085 | 5-7 | 7-13 | 0.60-0.72 | 0.86-0.96 | 0.40-1.50 | 0.00010-0.05 | 0.20-1.50 |
+| Italian Grand Prix | 0.010-0.020 | 5-6 | 6-12 | 0.60-0.72 | 0.82-0.92 | 0.20-0.80 | 0.0001-0.01 | 1.5-4.5 |
+| Hungarian Grand Prix | 0.025-0.100 | 2-3 | 4-12 | 0.60-0.85 | 0.74-0.86 | 0.20-0.80 | 0.0001-0.50 | 0.01-5.0 |
 
 ### XGBoost Final Hyperparameters
 
-| Grand Prix | Seed | Sampler | Optuna trials/window | Search version | Tuning strategy | Final n_estimators | Final learning_rate | Final max_depth | Final min_child_weight | Final subsample | Final colsample_bytree | Final gamma | Final reg_alpha | Final reg_lambda |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Bahrain Grand Prix | 42 | tpe | 200 | gp_final_random_v1 | per_window_all_windows_median_params_v1 | 271 | 0.047956 | 4 | 3 | 0.653872 | 0.876446 | 0.168908 | 0.000006 | 0.000001 |
-| Saudi Arabian Grand Prix | 42 | tpe | 200 | gp_final_random_v1 | per_window_all_windows_median_params_v1 | 250 | 0.040824 | 9 | 2 | 0.578319 | 0.832514 | 0.313078 | 0.002627 | 0.001516 |
-| United States Grand Prix | 42 | tpe | 200 | gp_final_random_v1 | per_window_all_windows_median_params_v1 | 323 | 0.064932 | 6 | 8 | 0.641973 | 0.903605 | 0.550455 | 0.003296 | 0.482227 |
-| Italian Grand Prix | 42 | tpe | 200 | gp_final_random_v1 | per_window_all_windows_median_params_v1 | 840 | 0.016880 | 6 | 6 | 0.667180 | 0.864367 | 0.218150 | 0.000749 | 1.698600 |
-| Hungarian Grand Prix | 42 | tpe | 200 | gp_final_random_v1 | per_window_all_windows_median_params_v1 | 124 | 0.067631 | 2 | 4 | 0.694635 | 0.819641 | 0.309690 | 0.004237 | 0.092258 |
+| Grand Prix | Seed | Sampler | Optuna trials/window | Final n_estimators | Final learning_rate | Final max_depth | Final min_child_weight | Final subsample | Final colsample_bytree | Final gamma | Final reg_alpha | Final reg_lambda |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Bahrain Grand Prix | 42 | tpe | 200 | 271 | 0.047956 | 4 | 3 | 0.653872 | 0.876446 | 0.168908 | 0.000006 | 0.000001 |
+| Saudi Arabian Grand Prix | 42 | tpe | 200 | 250 | 0.040824 | 9 | 2 | 0.578319 | 0.832514 | 0.313078 | 0.002627 | 0.001516 |
+| United States Grand Prix | 42 | tpe | 200 | 323 | 0.064932 | 6 | 8 | 0.641973 | 0.903605 | 0.550455 | 0.003296 | 0.482227 |
+| Italian Grand Prix | 42 | tpe | 200 | 840 | 0.016880 | 6 | 6 | 0.667180 | 0.864367 | 0.218150 | 0.000749 | 1.698600 |
+| Hungarian Grand Prix | 42 | tpe | 200 | 124 | 0.067631 | 2 | 4 | 0.694635 | 0.819641 | 0.309690 | 0.004237 | 0.092258 |
 
 ### Best Individual Validation Window by Grand Prix
 
@@ -376,8 +399,8 @@ Windows/PowerShell:
 ```
 
 If an XGBoost parameter file is not available for a circuit, or if the saved
-parameters do not match the current search-space version, tuning strategy, YAML
-bounds, or sampler, the XGBoost script will run Optuna before
+parameters do not match the current YAML bounds, sampler, or documented tuning
+procedure, the XGBoost script will run Optuna before
 training, so the full batch may take substantially longer. The current XGBoost
 tuning protocol runs an independent Optuna study for each sliding window inside
 the first 80% modeling block; `optuna_trials` is therefore interpreted as trials
