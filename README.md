@@ -30,6 +30,7 @@ TCC/
 |  |- Source/
 |     |- backward_elimination.py
 |     |- correlation_ablation_lr.py
+|     |- model_lstm_sw.py
 |     |- model_lr_sw.py
 |     |- model_xgb_sw.py
 |     |- modeling_utils.py
@@ -77,19 +78,20 @@ The reproducible modeling and feature-selection scripts are kept in `Scripts/Sou
 
 - `model_lr_sw.py`: Linear Regression with median imputation, standard scaling, sliding-window validation, and sequential holdout.
 - `model_xgb_sw.py`: XGBoost with regularized Optuna hyperparameter tuning, sliding-window validation, and sequential holdout.
+- `model_lstm_sw.py`: initial Keras LSTM regression baseline with YAML hyperparameters, grouped previous-window sequences, sliding-window validation inside the first 80% modeling block, and sequential holdout.
 - `model_interpretability.py`: unified interpretability runner that loads the saved Linear Regression and XGBoost models, then exports LR coefficients, XGBoost feature importance, XGBoost SHAP values, and a local SHAP force plot.
 - `backward_elimination.py`: p-value based backward elimination for the Linear Regression design matrix, fitted only on the first sequential modeling block.
 - `correlation_ablation_lr.py`: Linear Regression ablation runner that detects encoded-feature pairs with `|r| >= 0.80` inside the modeling block, then reruns the full sliding-window and sequential-holdout protocol after removing one feature from each pair.
 - `regression_diagnostics_lr.py`: Linear Regression residual-diagnostics runner that fits the model on the sequential modeling block and generates in-sample diagnostics for that retrained 80% block while keeping the final holdout unused.
-- `run_all_models.py`: batch runner for executing both model scripts across all configured Grand Prix events.
+- `run_all_models.py`: batch runner for executing configured model scripts across all configured Grand Prix events.
 - `modeling_utils.py`: shared configuration, temporal split, encoding, metric, confidence interval, COS, and MLflow tracking helpers.
 
 Categorical encoders, imputers and scalers are fitted only on the training
-portion of each split/window. Validation and final holdout records are
+portion of each temporal split. Validation and final holdout records are
 transformed using the training columns only, avoiding categorical leakage from
 future laps.
 
-Both scripts report:
+The Linear Regression and XGBoost scripts report:
 
 - sliding-window RMSE, MAE, R2, and residual standard deviation
 - sequential-holdout RMSE, MAE, and R2 with bootstrap confidence intervals
@@ -103,13 +105,36 @@ COS_RMSE = 0.5 * (RMSE_SW / RMSE_final) + 0.5 * (STD_SW / STD_final)
 ```
 
 The COS confidence intervals are descriptive because the sliding windows overlap.
-
-When `mlflow_enabled` is true, both model scripts also log each run to MLflow
-with the selected Grand Prix, feature lists, split/window settings,
-sliding-window metrics, holdout metrics, COS metrics, and JSON artifacts for the
-configuration and per-window results. XGBoost runs also log the generated
-parameter JSON when it exists. The default local tracking directory is
+When `mlflow_enabled` is true, the model scripts also log each run to MLflow
+with the selected Grand Prix, feature lists, split settings, validation metrics,
+holdout metrics, and JSON artifacts for the resolved configuration and summary
+results. XGBoost runs also log the generated parameter JSON when it exists. The default local tracking directory is
 `Scripts/Results/mlruns`, which is treated as generated output.
+
+Run the first simple LSTM baseline from the repository root with:
+
+```bash
+TARGET_GP_NAME="Bahrain Grand Prix" .venv/bin/python Scripts/Source/model_lstm_sw.py
+```
+
+```powershell
+$env:TARGET_GP_NAME = "Bahrain Grand Prix"
+.\.venv\Scripts\python.exe Scripts/Source/model_lstm_sw.py
+```
+
+The LSTM configuration is read from the selected circuit YAML file. The current
+pipeline uses the first 80% modeling block to build supervised temporal
+sequences and evaluates them with feasible sliding windows inside that block.
+Optuna tunes values such as
+`lstm_units`, `lstm_dropout`, `lstm_batch_size`, `lstm_learning_rate`, and
+learning-rate reduction settings. The LSTM sequence length is not tuned; it is
+derived from the sliding-window training length. LSTM preprocessing uses median
+imputation, one-hot encoding, and MinMax scaling fitted only on the current
+window-training portion. LSTM tensors use the previous derived training-window
+rows within each configured sequence group to predict the next
+`LapTime_seconds`. The final model is retrained on the full 80% modeling block
+with the epoch count calibrated from feasible sliding windows, and the final 20%
+sequential holdout remains untouched until final evaluation.
 
 ## Generated XGBoost Hyperparameter Tables
 

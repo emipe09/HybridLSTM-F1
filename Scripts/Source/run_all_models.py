@@ -16,12 +16,13 @@ DEFAULT_CONFIG_ORDER = ["bahrain.yaml", "saudi.yaml", "usa.yaml", "italy.yaml", 
 MODEL_SCRIPTS = {
     "lr": "model_lr_sw.py",
     "xgb": "model_xgb_sw.py",
+    "lstm": "model_lstm_sw.py",
 }
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run Linear Regression and XGBoost for all configured Formula 1 Grand Prix datasets."
+        description="Run configured modeling scripts for all configured Formula 1 Grand Prix datasets."
     )
     parser.add_argument(
         "--models",

@@ -12,8 +12,15 @@ The scripts can read experiment settings from `configs/*.yaml` through the
 $env:CONFIG_PATH = "configs/bahrain.yaml"
 .\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
 .\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_lstm_sw.py
 .\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
 .\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py
+```
+
+```bash
+CONFIG_PATH="configs/bahrain.yaml" .venv/bin/python Scripts/Source/model_lr_sw.py
+CONFIG_PATH="configs/bahrain.yaml" .venv/bin/python Scripts/Source/model_xgb_sw.py
+CONFIG_PATH="configs/bahrain.yaml" .venv/bin/python Scripts/Source/model_lstm_sw.py
 ```
 
 When `CONFIG_PATH` is not defined, the scripts load the corresponding YAML file
@@ -37,17 +44,21 @@ Relative paths are resolved from the repository root.
 
 ## MLflow Tracking
 
-Both model scripts log experiment metadata to MLflow when `mlflow_enabled` is
+The model scripts log experiment metadata to MLflow when `mlflow_enabled` is
 true. The default tracking directory is `Scripts/Results/mlruns`, which is
 generated output and should not be committed.
 
-Each run records:
+Linear Regression and XGBoost runs record:
 
 - selected Grand Prix, feature lists, split ratios, window sizes, and random seed
 - sliding-window RMSE, MAE, R2, residual standard deviation, and per-window values
 - final sequential-holdout RMSE, MAE, R2, residual standard deviation, and confidence intervals
 - `COS_MAE`, `COS_RMSE`, and their descriptive confidence intervals
 - JSON artifacts for the resolved configuration, per-window results, and summary metrics
+
+LSTM runs record the same selected Grand Prix, feature lists, split ratios,
+sliding-window metrics, final sequential-holdout metrics, the selected sequence
+configuration, and the saved Keras model metadata.
 
 Start the local UI from the repository root with:
 
@@ -82,6 +93,30 @@ Runs XGBoost for the selected Grand Prix using:
 - saved per-window parameter summaries and per-trial CSV files for search-space auditing
 - final sequential holdout evaluation
 - saved final booster artifact and metadata for downstream interpretability
+
+## `model_lstm_sw.py`
+
+Runs an initial LSTM regression baseline for the selected Grand Prix using:
+
+- YAML-configured hyperparameters with optional Optuna tuning
+- previous-window sequences following the configured `LapNumber` ordering inside each configured sequence group
+- LSTM sequence length derived from the sliding-window training length
+- Optuna tuning by mean validation RMSE across feasible sliding windows inside the first 80% modeling data
+- median imputation, MinMax scaling, and one-hot encoding fitted only on each window-training block
+- target MinMax scaling fitted only on each window-training block
+- early stopping and learning-rate reduction using only each window-validation block
+- sliding-window validation over the modeling block
+- final retraining on the full 80% modeling block with the calibrated epoch count
+- final sequential holdout evaluation
+- saved final Keras model artifact and metadata
+
+The LSTM receives the previous derived training-window rows from the configured
+temporal order to predict the next available `LapTime_seconds`. This length is
+computed from the same `window_ratio` and `window_train_ratio` used by the
+sliding-window protocol, using only the first 80% modeling block. `LapNumber` is
+used as the temporal ordering axis inside each configured `lstm_group_cols`
+series. The final sequential holdout is not used for training, hyperparameter
+selection, or early stopping.
 
 ## `model_interpretability.py`
 
@@ -219,8 +254,17 @@ Useful options:
 ```powershell
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models lr
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models xgb
+.\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models lstm
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --continue-on-error
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --configs bahrain.yaml usa.yaml
+```
+
+```bash
+.venv/bin/python Scripts/Source/run_all_models.py --models lr
+.venv/bin/python Scripts/Source/run_all_models.py --models xgb
+.venv/bin/python Scripts/Source/run_all_models.py --models lstm
+.venv/bin/python Scripts/Source/run_all_models.py --continue-on-error
+.venv/bin/python Scripts/Source/run_all_models.py --configs bahrain.yaml usa.yaml
 ```
 
 The default run order is Bahrain, Saudi Arabia, United States, Italy, and
@@ -234,7 +278,7 @@ metric calculation, bootstrap confidence intervals, and COS reporting helpers.
 
 ## COS Metrics
 
-Both scripts report:
+The Linear Regression and XGBoost scripts report:
 
 ```text
 COS_MAE  = 0.5 * (MAE_final / MAE_SW)  + 0.5 * (STD_final / STD_SW)

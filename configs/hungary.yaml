@@ -11,6 +11,9 @@ xgb_model_metadata_filename_template: "{safe_gp_name}_xgb_model_sw_metadata.json
 lr_models_subdir: "linear_regression/sw/models"
 lr_model_filename_template: "{safe_gp_name}_lr_model_sw.pkl"
 lr_model_metadata_filename_template: "{safe_gp_name}_lr_model_sw_metadata.json"
+lstm_models_subdir: "lstm/sw/models"
+lstm_model_filename_template: "{safe_gp_name}_lstm_model_sw.keras"
+lstm_model_metadata_filename_template: "{safe_gp_name}_lstm_model_sw_metadata.json"
 target_col: "LapTime_seconds"
 lap_col: "LapNumber"
 numerical_features: [TyreLife, LapNumber, Pressure_RBF_Median, TrackTemp_RBF_Median, WindSpeed_RBF_Median, TempDelta_RBF_Median, 'Year', 'LapTime_prev']
@@ -22,6 +25,23 @@ window_step_ratio: 0.20
 alpha_cos: 0.50
 beta_cos: 0.50
 random_seed: 42
+lstm_units: 32
+lstm_dense_units: 16
+lstm_dropout: 0.10
+lstm_recurrent_dropout: 0.00
+lstm_learning_rate: 0.0001
+lstm_batch_size: 16
+lstm_epochs: 80
+lstm_patience: 8
+lstm_reduce_lr_factor: 0.50
+lstm_reduce_lr_patience: 4
+lstm_min_learning_rate: 0.00001
+lstm_tuning_enabled: true
+lstm_optuna_trials: 8
+lstm_tuning_epochs: 40
+lstm_tuning_patience: 5
+lstm_min_final_epochs: 20
+lstm_group_cols: [Year, Driver]
 optuna_trials: 200
 use_saved_xgb_params: true
 xgb_optuna_sampler: "tpe"
