@@ -64,3 +64,18 @@ xgb_reg_lambda_max: 4.5
 mlflow_enabled: true
 mlflow_tracking_uri: "Scripts/Results/mlruns"
 mlflow_experiment_name: "f1-lap-time-{safe_gp_name}"
+# Expanding-window model artifacts
+ew_xgb_params_subdir: "xgboost/ew/params"
+ew_xgb_params_filename_template: "{safe_gp_name}_xgb_params_ew.json"
+ew_xgb_models_subdir: "xgboost/ew/models"
+ew_xgb_model_filename_template: "{safe_gp_name}_xgb_model_ew.json"
+ew_xgb_model_metadata_filename_template: "{safe_gp_name}_xgb_model_ew_metadata.json"
+ew_lr_models_subdir: "linear_regression/ew/models"
+ew_lr_model_filename_template: "{safe_gp_name}_lr_model_ew.pkl"
+ew_lr_model_metadata_filename_template: "{safe_gp_name}_lr_model_ew_metadata.json"
+# Window size sweep configuration
+window_size_sweep_min: 0.05
+window_size_sweep_max: 0.50
+window_size_sweep_step: 0.05
+window_sweep_results_dir: "Scripts/Results/window_sweep"
+window_sweep_results_filename_template: "{safe_gp_name}_window_sweep_results.csv"

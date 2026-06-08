@@ -32,8 +32,12 @@ TCC/
 |     |- correlation_ablation_lr.py
 |     |- model_lstm_sw.py
 |     |- model_lr_sw.py
+|     |- model_lr_ew.py
 |     |- model_xgb_sw.py
+|     |- model_xgb_ew.py
 |     |- modeling_utils.py
+|     |- window_size_sweep.py
+|     |- xgb_utils.py
 |- configs/
 |  |- bahrain.yaml
 |  |- saudi.yaml
@@ -70,41 +74,52 @@ The notebooks in `Scripts/Notebooks/` are the full circuit-specific analyses:
 | `Notebook_Italia.ipynb` | Italian Grand Prix |
 | `Notebook_Hungary.ipynb` | Hungarian Grand Prix |
 
-Each notebook is written in English and follows the same structure: data preparation, exploratory analysis, feature engineering, Linear Regression, XGBoost, sliding-window validation, sequential holdout, and COS metrics.
+Each notebook is written in English and follows the same structure: data preparation, exploratory analysis, feature engineering, Linear Regression, XGBoost, sliding-window validation, sequential holdout, COS metrics, and an expanding-window validation section that compares EW and SW fold-level metrics side by side.
 
 ## Modeling Scripts
 
 The reproducible modeling and feature-selection scripts are kept in `Scripts/Source/`:
 
 - `model_lr_sw.py`: Linear Regression with median imputation, standard scaling, sliding-window validation, and sequential holdout.
+- `model_lr_ew.py`: Linear Regression with expanding-window validation and sequential holdout. The training set grows cumulatively across folds; the validation chunk is the same fixed size as the SW validation portion.
 - `model_xgb_sw.py`: XGBoost with regularized Optuna hyperparameter tuning, sliding-window validation, and sequential holdout.
+- `model_xgb_ew.py`: XGBoost with expanding-window validation and sequential holdout. Runs an independent Optuna study per fold (same strategy as SW) and aggregates hyperparameters by median across all folds.
+- `window_size_sweep.py`: window-size sensitivity sweep that evaluates all four combinations of SW/EW × LR/XGBoost for window ratios from the YAML-configured range (default 5%–50% in 5% steps). XGBoost uses pre-tuned parameters loaded from the SW params JSON; Optuna is not re-run per window size. Results are saved to a CSV defined in the YAML configuration.
 - `model_lstm_sw.py`: initial Keras LSTM regression baseline with YAML hyperparameters, grouped previous-window sequences, sliding-window validation inside the first 80% modeling block, and sequential holdout.
 - `model_interpretability.py`: unified interpretability runner that loads the saved Linear Regression and XGBoost models, then exports LR coefficients, XGBoost feature importance, XGBoost SHAP values, and a local SHAP force plot.
 - `backward_elimination.py`: p-value based backward elimination for the Linear Regression design matrix, fitted only on the first sequential modeling block.
 - `correlation_ablation_lr.py`: Linear Regression ablation runner that detects encoded-feature pairs with `|r| >= 0.80` inside the modeling block, then reruns the full sliding-window and sequential-holdout protocol after removing one feature from each pair.
 - `regression_diagnostics_lr.py`: Linear Regression residual-diagnostics runner that fits the model on the sequential modeling block and generates in-sample diagnostics for that retrained 80% block while keeping the final holdout unused.
 - `run_all_models.py`: batch runner for executing configured model scripts across all configured Grand Prix events.
-- `modeling_utils.py`: shared configuration, temporal split, encoding, metric, confidence interval, COS, and MLflow tracking helpers.
+- `modeling_utils.py`: shared configuration, temporal split, encoding, metric, confidence interval, COS, and MLflow tracking helpers. Includes `build_expanding_windows()` and path builders for EW artifacts.
+- `xgb_utils.py`: shared XGBoost utilities (search-space definitions, Optuna integration, DMatrix construction, parameter aggregation) used by both SW and EW XGBoost scripts.
 
 Categorical encoders, imputers and scalers are fitted only on the training
 portion of each temporal split. Validation and final holdout records are
 transformed using the training columns only, avoiding categorical leakage from
 future laps.
 
-The Linear Regression and XGBoost scripts report:
+### Validation Protocols
 
-- sliding-window RMSE, MAE, R2, and residual standard deviation
+**Sliding-window (SW)**: a fixed-length window slides across the modeling block in steps equal to the validation portion. Training and validation subsets do not grow across windows.
+
+**Expanding-window (EW)**: the training set grows cumulatively. Fold `k` trains on all laps from the start through the end of fold `k-1`'s validation chunk and validates on the next fixed-size chunk. The initial training size and validation chunk size match the first SW window. Confidence intervals under the EW protocol are descriptive because the training sets are not independent across folds.
+
+The Linear Regression and XGBoost scripts (SW and EW variants) report:
+
+- per-window/fold RMSE, MAE, R2, and residual standard deviation
+- mean and indicative 95% confidence intervals across windows/folds
 - sequential-holdout RMSE, MAE, and R2 with bootstrap confidence intervals
 - `COS_MAE` and `COS_RMSE` with indicative 95% confidence intervals
 
 The COS metrics are computed as:
 
 ```text
-COS_MAE  = 0.5 * (MAE_SW / MAE_final)  + 0.5 * (STD_SW / STD_final)
-COS_RMSE = 0.5 * (RMSE_SW / RMSE_final) + 0.5 * (STD_SW / STD_final)
+COS_MAE  = 0.5 * (MAE_SW_or_EW / MAE_final)  + 0.5 * (STD_SW_or_EW / STD_final)
+COS_RMSE = 0.5 * (RMSE_SW_or_EW / RMSE_final) + 0.5 * (STD_SW_or_EW / STD_final)
 ```
 
-The COS confidence intervals are descriptive because the sliding windows overlap.
+The COS confidence intervals under SW are descriptive because the sliding windows overlap; under EW they are descriptive because the expanding training sets have growing sizes and are correlated across folds.
 When `mlflow_enabled` is true, the model scripts also log each run to MLflow
 with the selected Grand Prix, feature lists, split settings, validation metrics,
 holdout metrics, and JSON artifacts for the resolved configuration and summary
@@ -340,6 +355,42 @@ $env:CONFIG_PATH = "configs/bahrain.yaml"
 .\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py
 ```
 
+To run the **expanding-window** variants:
+
+Linux/macOS:
+
+```bash
+export CONFIG_PATH="configs/bahrain.yaml"
+python Scripts/Source/model_lr_ew.py
+python Scripts/Source/model_xgb_ew.py
+```
+
+Windows/PowerShell:
+
+```powershell
+$env:CONFIG_PATH = "configs/bahrain.yaml"
+.\.venv\Scripts\python.exe Scripts/Source/model_lr_ew.py
+.\.venv\Scripts\python.exe Scripts/Source/model_xgb_ew.py
+```
+
+To run the **window-size sensitivity sweep** (requires the SW XGBoost params JSON to exist first):
+
+Linux/macOS:
+
+```bash
+export CONFIG_PATH="configs/bahrain.yaml"
+python Scripts/Source/window_size_sweep.py
+```
+
+Windows/PowerShell:
+
+```powershell
+$env:CONFIG_PATH = "configs/bahrain.yaml"
+.\.venv\Scripts\python.exe Scripts/Source/window_size_sweep.py
+```
+
+The sweep evaluates all four model/protocol combinations (SW × LR, SW × XGBoost, EW × LR, EW × XGBoost) for each configured window ratio and writes results to a CSV under `Scripts/Results/window_sweep/`.
+
 The YAML files control the Grand Prix name, target column, lap column, feature
 lists, validation ratios, COS coefficients, random seed, Optuna settings,
 Grand Prix-specific XGBoost search-space bounds, and MLflow tracking settings,
@@ -371,6 +422,9 @@ Linux/macOS:
 ```bash
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_sw.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_sw.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_ew.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_ew.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/window_size_sweep.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_interpretability.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/backward_elimination.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/correlation_ablation_lr.py
@@ -383,6 +437,9 @@ Windows/PowerShell:
 $env:TARGET_GP_NAME = "Bahrain Grand Prix"
 .\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
 .\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_lr_ew.py
+.\.venv\Scripts\python.exe Scripts/Source/model_xgb_ew.py
+.\.venv\Scripts\python.exe Scripts/Source/window_size_sweep.py
 .\.venv\Scripts\python.exe Scripts/Source/model_interpretability.py
 .\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
 .\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py
@@ -407,13 +464,15 @@ Windows/PowerShell:
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py
 ```
 
-You can limit the batch run to one model family:
+You can limit the batch run to one model family or add EW and sweep variants:
 
 Linux/macOS:
 
 ```bash
 python Scripts/Source/run_all_models.py --models lr
 python Scripts/Source/run_all_models.py --models xgb
+python Scripts/Source/run_all_models.py --models lr lr_ew xgb xgb_ew
+python Scripts/Source/run_all_models.py --models sweep
 ```
 
 Windows/PowerShell:
@@ -421,7 +480,11 @@ Windows/PowerShell:
 ```powershell
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models lr
 .\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models xgb
+.\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models lr lr_ew xgb xgb_ew
+.\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models sweep
 ```
+
+Available `--models` options: `lr`, `lr_ew`, `xgb`, `xgb_ew`, `lstm`, `sweep`. The default is `lr xgb`, which preserves the existing behaviour without running EW or sweep unless explicitly requested.
 
 If an XGBoost parameter file is not available for a circuit, or if the saved
 parameters do not match the current YAML bounds, sampler, or documented tuning
@@ -538,8 +601,9 @@ adjust the configured feature set used by the affected circuit models.
 ## Reproducibility Notes
 
 - The final 20% of race laps is reserved as a sequential holdout.
-- Sliding-window validation is performed only inside the first 80% modeling block.
-- XGBoost parameter files are generated under `Scripts/Results/` when needed and are ignored by Git.
+- Sliding-window and expanding-window validation are performed only inside the first 80% modeling block.
+- XGBoost SW parameter files are generated under `Scripts/Results/xgboost/sw/params/` when needed. XGBoost EW parameter files are generated under `Scripts/Results/xgboost/ew/params/`. Both are ignored by Git.
+- Window-size sweep results are generated under `Scripts/Results/window_sweep/` and are ignored by Git.
 - MLflow run metadata is generated under `Scripts/Results/mlruns/` by default and is ignored by Git.
 - The notebooks remain the narrative, circuit-specific record of the analysis; the scripts are the lean reproducible runners for GitHub.
 

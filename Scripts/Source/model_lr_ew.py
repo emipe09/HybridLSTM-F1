@@ -1,4 +1,4 @@
-"""Linear Regression with sliding-window validation and sequential holdout."""
+"""Linear Regression with expanding-window validation and sequential holdout."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from modeling_utils import (
-    build_lr_model_paths,
+    build_lr_ew_model_paths,
     build_sequential_split,
-    build_sliding_windows,
+    build_expanding_windows,
     calc_holdout_ci,
     calc_stats,
     fit_predict_linear_regression,
@@ -34,7 +34,7 @@ def main():
     num_cols, cat_cols = select_modeling_columns(df_base, config)
     X_raw, y_raw, valid_indices = prepare_raw_features(df_base, num_cols, cat_cols, target_col)
 
-    print("--- LINEAR REGRESSION: SLIDING WINDOW + SEQUENTIAL HOLDOUT ---")
+    print("--- LINEAR REGRESSION: EXPANDING WINDOW + SEQUENTIAL HOLDOUT ---")
     print(f"Grand Prix: {target_gp_name}")
     print(
         "Config: "
@@ -68,7 +68,7 @@ def main():
     lap_model_sorted = model_laps.loc[model_order_idx].reset_index(drop=True)
     unique_laps = np.sort(pd.to_numeric(lap_model_sorted, errors="coerce").dropna().unique())
 
-    windows, window_size, train_size, val_size, step_size = build_sliding_windows(
+    windows, window_size, train_size, val_size, step_size = build_expanding_windows(
         len(unique_laps),
         float(config["window_ratio"]),
         float(config["window_train_ratio"]),
@@ -79,11 +79,15 @@ def main():
     print(f"Total laps: {total_laps} (LapNumber {lap_min}-{lap_max})")
     print(f"Modeling block: laps {lap_min}-{model_end_lap} | records={len(X_model_raw)}")
     print(f"Holdout block: laps {holdout_start_lap}-{lap_max} | records={len(X_holdout_raw)}")
-    print(f"Sliding windows: {len(windows)} | window={window_size} | train/val={train_size}/{val_size} | step={step_size}")
+    print(
+        f"Expanding windows: {len(windows)} | initial_train={train_size} | "
+        f"val_chunk={val_size} | step={step_size}"
+    )
+    print("NOTE: expanding windows have growing training sets; confidence intervals are descriptive.")
 
     results = {"window": [], "rmse": [], "mae": [], "r2": [], "std": []}
 
-    print("\n--- Sliding-window validation ---")
+    print("\n--- Expanding-window validation ---")
     for i, (start, split, end) in enumerate(windows, start=1):
         train_laps = unique_laps[start:split]
         val_laps = unique_laps[split:end]
@@ -93,7 +97,7 @@ def main():
         X_train, y_train = X_model_raw.loc[train_mask], y_model.loc[train_mask]
         X_val, y_val = X_model_raw.loc[val_mask], y_model.loc[val_mask]
         if len(X_train) == 0 or len(X_val) == 0:
-            raise ValueError(f"Window {i}: empty train or validation fold.")
+            raise ValueError(f"Fold {i}: empty train or validation set.")
 
         preds, *_ = fit_predict_linear_regression(X_train, y_train, X_val, cat_cols)
 
@@ -109,7 +113,7 @@ def main():
         results["std"].append(std_value)
 
         print(
-            f"Window {i:02d} | train laps {int(train_laps[0])}-{int(train_laps[-1])} | "
+            f"Fold {i:02d} | train laps {int(train_laps[0])}-{int(train_laps[-1])} ({len(X_train)} records) | "
             f"val laps {int(val_laps[0])}-{int(val_laps[-1])} | "
             f"RMSE={rmse_value:.4f} | MAE={mae_value:.4f} | R2={r2_value:.4f}"
         )
@@ -123,7 +127,7 @@ def main():
         X_model_raw, y_model, X_holdout_raw, cat_cols
     )
 
-    lr_model_path, lr_model_metadata_path = build_lr_model_paths(repo_root, config)
+    lr_model_path, lr_model_metadata_path = build_lr_ew_model_paths(repo_root, config)
     lr_model_path.parent.mkdir(parents=True, exist_ok=True)
     lr_payload = {
         "model": final_model,
@@ -133,6 +137,7 @@ def main():
         "target_col": target_col,
         "lap_col": lap_col,
         "training_block": "first_sequential_modeling_block",
+        "validation_protocol": "expanding_window",
         "preprocessing": "median_imputer_standard_scaler_one_hot_drop_first",
     }
     with lr_model_path.open("wb") as file:
@@ -140,6 +145,7 @@ def main():
     lr_model_metadata = {
         "target_gp_name": target_gp_name,
         "model": "linear_regression",
+        "validation_protocol": "expanding_window",
         "model_path": str(lr_model_path),
         "target_col": target_col,
         "lap_col": lap_col,
@@ -151,8 +157,8 @@ def main():
         "preprocessing": "median_imputer_standard_scaler_one_hot_drop_first",
     }
     lr_model_metadata_path.write_text(json.dumps(lr_model_metadata, indent=2), encoding="utf-8")
-    print(f"Saved final Linear Regression model to: {lr_model_path}")
-    print(f"Saved final Linear Regression model metadata to: {lr_model_metadata_path}")
+    print(f"Saved final Linear Regression EW model to: {lr_model_path}")
+    print(f"Saved final Linear Regression EW model metadata to: {lr_model_metadata_path}")
 
     holdout_ci = calc_holdout_ci(y_holdout.to_numpy(), preds_holdout, seed=int(config["random_seed"]))
     rmse_holdout = float(np.sqrt(mean_squared_error(y_holdout, preds_holdout)))
@@ -180,20 +186,18 @@ def main():
         "holdout_start_lap": holdout_start_lap,
         "model_records": len(X_model_raw),
         "holdout_records": len(X_holdout_raw),
-        "sliding_windows": len(windows),
-        "window_size": window_size,
-        "window_train_size": train_size,
-        "window_validation_size": val_size,
-        "window_step_size": step_size,
+        "expanding_folds": len(windows),
+        "initial_train_size": train_size,
+        "validation_chunk_size": val_size,
     }
     summary_metrics = {
-        "sw_rmse_mean": rmse_m,
-        "sw_rmse_ci": (rmse_l, rmse_u),
-        "sw_mae_mean": mae_m,
-        "sw_mae_ci": (mae_l, mae_u),
-        "sw_r2_mean": r2_m,
-        "sw_r2_ci": (r2_l, r2_u),
-        "sw_residual_std_mean": std_m,
+        "ew_rmse_mean": rmse_m,
+        "ew_rmse_ci": (rmse_l, rmse_u),
+        "ew_mae_mean": mae_m,
+        "ew_mae_ci": (mae_l, mae_u),
+        "ew_r2_mean": r2_m,
+        "ew_r2_ci": (r2_l, r2_u),
+        "ew_residual_std_mean": std_m,
         "holdout_rmse": rmse_holdout,
         "holdout_rmse_ci": holdout_ci["rmse"],
         "holdout_mae": mae_holdout,
@@ -217,10 +221,11 @@ def main():
         summary_metrics,
         extra_params={"preprocessing": "median_imputer_standard_scaler_one_hot_drop_first"},
         artifacts=[lr_model_path, lr_model_metadata_path],
+        validation_mode="ew",
     )
 
-    print("\n--- Sliding-window summary (indicative CI) ---")
-    print("NOTE: sliding windows overlap; these confidence intervals are descriptive.")
+    print("\n--- Expanding-window summary (indicative CI) ---")
+    print("NOTE: expanding windows have growing training sets; confidence intervals are descriptive.")
     print(f"RMSE: {rmse_m:.4f} | 95% CI: [{rmse_l:.4f}, {rmse_u:.4f}]")
     print(f"MAE:  {mae_m:.4f} | 95% CI: [{mae_l:.4f}, {mae_u:.4f}]")
     print(f"R2:   {r2_m:.4f} | 95% CI: [{r2_l:.4f}, {r2_u:.4f}]")
@@ -230,9 +235,9 @@ def main():
     print(f"MAE:  {mae_holdout:.4f} | 95% CI: [{holdout_ci['mae'][0]:.4f}, {holdout_ci['mae'][1]:.4f}]")
     print(f"R2:   {r2_holdout:.4f} | 95% CI: [{holdout_ci['r2'][0]:.4f}, {holdout_ci['r2'][1]:.4f}]")
     print(f"COS_MAE:  {cos['cos_mae']:.4f} | 95% CI: [{cos['cos_mae_ci'][0]:.4f}, {cos['cos_mae_ci'][1]:.4f}]")
-    print(f"          MAE final/SW={cos['mae_final']:.4f}/{cos['mae_sw']:.4f} | STD final/SW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
+    print(f"          MAE final/EW={cos['mae_final']:.4f}/{cos['mae_sw']:.4f} | STD final/EW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
     print(f"COS_RMSE: {cos['cos_rmse']:.4f} | 95% CI: [{cos['cos_rmse_ci'][0]:.4f}, {cos['cos_rmse_ci'][1]:.4f}]")
-    print(f"          RMSE final/SW={cos['rmse_final']:.4f}/{cos['rmse_sw']:.4f} | STD final/SW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
+    print(f"          RMSE final/EW={cos['rmse_final']:.4f}/{cos['rmse_sw']:.4f} | STD final/EW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
 
     print("\n--- Final model coefficients ---")
     coefs = pd.Series(final_model.coef_, index=feature_names)

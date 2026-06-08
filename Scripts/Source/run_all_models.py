@@ -15,8 +15,11 @@ DEFAULT_CONFIG_ORDER = ["bahrain.yaml", "saudi.yaml", "usa.yaml", "italy.yaml", 
 
 MODEL_SCRIPTS = {
     "lr": "model_lr_sw.py",
+    "lr_ew": "model_lr_ew.py",
     "xgb": "model_xgb_sw.py",
+    "xgb_ew": "model_xgb_ew.py",
     "lstm": "model_lstm_sw.py",
+    "sweep": "window_size_sweep.py",
 }
 
 
@@ -27,9 +30,9 @@ def parse_args():
     parser.add_argument(
         "--models",
         nargs="+",
-        choices=MODEL_SCRIPTS.keys(),
-        default=list(MODEL_SCRIPTS.keys()),
-        help="Model scripts to run. Default: lr xgb.",
+        choices=list(MODEL_SCRIPTS.keys()),
+        default=["lr", "xgb"],
+        help="Model scripts to run. Default: lr xgb. Options: lr lr_ew xgb xgb_ew lstm sweep.",
     )
     parser.add_argument(
         "--configs",

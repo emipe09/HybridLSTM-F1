@@ -1,4 +1,4 @@
-"""Shared utilities for the sliding-window modeling scripts."""
+"""Shared utilities for the sliding-window and expanding-window modeling scripts."""
 
 from __future__ import annotations
 
@@ -192,6 +192,45 @@ def build_lr_model_paths(repo_root: Path, config: dict) -> tuple[Path, Path]:
     return model_dir / model_filename, model_dir / metadata_filename
 
 
+def build_xgb_ew_params_path(repo_root: Path, config: dict) -> Path:
+    target_gp_name = str(config["target_gp_name"])
+    safe_name = safe_gp_name(target_gp_name)
+    filename_template = str(
+        config.get("ew_xgb_params_filename_template", "{safe_gp_name}_xgb_params_ew.json")
+    )
+    filename = filename_template.format(target_gp_name=target_gp_name, safe_gp_name=safe_name)
+    subdir = str(config.get("ew_xgb_params_subdir", "xgboost/ew/params"))
+    return resolve_repo_path(repo_root, str(config["results_dir"])) / subdir / filename
+
+
+def build_xgb_ew_model_paths(repo_root: Path, config: dict) -> tuple[Path, Path]:
+    target_gp_name = str(config["target_gp_name"])
+    safe_name = safe_gp_name(target_gp_name)
+    model_filename = str(
+        config.get("ew_xgb_model_filename_template", "{safe_gp_name}_xgb_model_ew.json")
+    ).format(target_gp_name=target_gp_name, safe_gp_name=safe_name)
+    metadata_filename = str(
+        config.get("ew_xgb_model_metadata_filename_template", "{safe_gp_name}_xgb_model_ew_metadata.json")
+    ).format(target_gp_name=target_gp_name, safe_gp_name=safe_name)
+    subdir = str(config.get("ew_xgb_models_subdir", "xgboost/ew/models"))
+    model_dir = resolve_repo_path(repo_root, str(config["results_dir"])) / subdir
+    return model_dir / model_filename, model_dir / metadata_filename
+
+
+def build_lr_ew_model_paths(repo_root: Path, config: dict) -> tuple[Path, Path]:
+    target_gp_name = str(config["target_gp_name"])
+    safe_name = safe_gp_name(target_gp_name)
+    model_filename = str(
+        config.get("ew_lr_model_filename_template", "{safe_gp_name}_lr_model_ew.pkl")
+    ).format(target_gp_name=target_gp_name, safe_gp_name=safe_name)
+    metadata_filename = str(
+        config.get("ew_lr_model_metadata_filename_template", "{safe_gp_name}_lr_model_ew_metadata.json")
+    ).format(target_gp_name=target_gp_name, safe_gp_name=safe_name)
+    subdir = str(config.get("ew_lr_models_subdir", "linear_regression/ew/models"))
+    model_dir = resolve_repo_path(repo_root, str(config["results_dir"])) / subdir
+    return model_dir / model_filename, model_dir / metadata_filename
+
+
 def resolve_mlflow_tracking_uri(repo_root: Path, config: dict) -> str:
     tracking_uri = str(config.get("mlflow_tracking_uri", "Scripts/Results/mlruns"))
     if "://" in tracking_uri or tracking_uri.startswith("databricks"):
@@ -236,6 +275,7 @@ def log_mlflow_run(
     summary_metrics: dict,
     extra_params: dict | None = None,
     artifacts: list[Path] | None = None,
+    validation_mode: str = "sw",
 ):
     if not bool(config.get("mlflow_enabled", True)):
         return None
@@ -252,7 +292,7 @@ def log_mlflow_run(
         target_gp_name=config["target_gp_name"],
         safe_gp_name=safe_name,
     )
-    run_name = f"{safe_name}-{model_name}-sw"
+    run_name = f"{safe_name}-{model_name}-{validation_mode}"
 
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
@@ -284,13 +324,13 @@ def log_mlflow_run(
             for metric_name in ("rmse", "mae", "r2", "std"):
                 metric_values = window_results.get(metric_name, [])
                 if index < len(metric_values):
-                    mlflow.log_metric(f"sw_window_{metric_name}", float(metric_values[index]), step=step)
+                    mlflow.log_metric(f"{validation_mode}_window_{metric_name}", float(metric_values[index]), step=step)
 
         temp_artifact_dir = resolve_repo_path(repo_root, str(config["results_dir"])) / "mlflow_tmp" / active_run.info.run_id
         temp_artifact_dir.mkdir(parents=True, exist_ok=True)
         generated_artifacts = {
             "config.json": config,
-            "sliding_window_results.json": window_results,
+            f"{validation_mode}_window_results.json": window_results,
             "summary_metrics.json": summary_metrics,
         }
         for artifact_name, artifact_data in generated_artifacts.items():
@@ -363,6 +403,24 @@ def align_one_hot(X_train, X_eval, cat_cols, drop_first):
     X_eval_enc = X_eval_enc.reindex(columns=X_train_enc.columns, fill_value=0)
 
     return X_train_enc, X_eval_enc
+
+
+def fit_predict_linear_regression(X_train, y_train, X_eval, cat_cols):
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LinearRegression
+    from sklearn.preprocessing import StandardScaler
+
+    X_train_enc, X_eval_enc = align_one_hot(X_train, X_eval, cat_cols, drop_first=True)
+    imputer = SimpleImputer(strategy="median")
+    scaler = StandardScaler()
+    model = LinearRegression()
+    X_train_imp = imputer.fit_transform(X_train_enc)
+    X_eval_imp = imputer.transform(X_eval_enc)
+    X_train_scaled = scaler.fit_transform(X_train_imp)
+    X_eval_scaled = scaler.transform(X_eval_imp)
+    model.fit(X_train_scaled, y_train)
+    preds = model.predict(X_eval_scaled)
+    return preds, model, imputer, scaler, X_train_enc.columns
 
 
 def calc_stats(values):
@@ -451,6 +509,43 @@ def build_sliding_windows(n_laps, window_ratio, train_ratio, step_ratio):
     last_start = n_laps - window_size
     if not windows or windows[-1][0] != last_start:
         windows.append((last_start, last_start + train_size, last_start + window_size))
+
+    return windows, window_size, train_size, val_size, step_size
+
+
+def build_expanding_windows(n_laps, window_ratio, train_ratio, step_ratio):
+    """
+    Generates expanding-window folds within the modeling block.
+
+    The initial training set covers the same lap count as the first SW window's train portion
+    (window_ratio * train_ratio * n_laps). The validation chunk equals the SW validation
+    portion (window_ratio * (1 - train_ratio) * n_laps). Each fold expands training by one
+    val_chunk then validates on the next chunk. Training always starts from lap index 0.
+    The step_ratio parameter is accepted for API parity with build_sliding_windows but is
+    unused — EW always advances by exactly one val_chunk.
+    """
+    if n_laps < 2:
+        raise ValueError("Insufficient data for expanding window validation.")
+
+    window_size = max(2, min(int(np.ceil(n_laps * window_ratio)), n_laps))
+    train_size = max(1, int(np.floor(window_size * train_ratio)))
+    if train_size >= window_size:
+        train_size = window_size - 1
+
+    val_size = window_size - train_size
+    step_size = val_size
+
+    windows = []
+    train_end = train_size
+    while train_end + val_size <= n_laps:
+        windows.append((0, train_end, train_end + val_size))
+        train_end += val_size
+
+    if not windows:
+        raise ValueError(
+            f"No expanding windows could be constructed: n_laps={n_laps}, "
+            f"window_ratio={window_ratio}, train_ratio={train_ratio}."
+        )
 
     return windows, window_size, train_size, val_size, step_size
 
