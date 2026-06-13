@@ -151,6 +151,46 @@ rows within each configured sequence group to predict the next
 with the epoch count calibrated from feasible sliding windows, and the final 20%
 sequential holdout remains untouched until final evaluation.
 
+## Window-Size Sensitivity Analysis and Circuit-Specific Model Selection
+
+After implementing both the sliding-window (SW) and expanding-window (EW) protocols for Linear Regression (LR) and XGBoost (XGB), a window-size sensitivity sweep was conducted across all five circuits. The sweep evaluated window ratios from 5% to 55% in 5% increments and produced per-window validation metrics together with sequential-holdout performance. Selection criteria focused primarily on **holdout performance** and the **COS metric** (coefficient of stability), which captures how well the in-window error generalizes to the final holdout block. A COS close to 1.0 indicates stable generalization; values much greater than 1.0 signal that the model degrades significantly on the unseen holdout laps.
+
+### Key Findings by Model and Protocol
+
+**Linear Regression – Sliding Window (LR-SW):**  
+SW proved impractical for Linear Regression across all five circuits. The fixed-size training window provides insufficient context for a linear model, leading to consistently high COS values and poor holdout generalization. LR-SW results were dismissed as a viable final configuration.
+
+**Linear Regression – Expanding Window (LR-EW):**  
+EW dramatically improved LR stability. As the training set grows cumulatively, the linear model accumulates more context and generalizes better. Multiple window sizes were competitive, but the selection focused on the best combination of holdout error and COS. The optimal window size varied by circuit character.
+
+**XGBoost – Sliding Window (XGB-SW):**  
+SW with XGBoost yielded consistent in-window performance across most circuits, with low per-fold RMSE. However, COS values sometimes signalled that holdout error rose relative to in-window error. For circuits where SW was selected over EW, the chosen window size balanced per-fold accuracy with the best holdout generalization.
+
+**XGBoost – Expanding Window (XGB-EW):**  
+EW with XGBoost sometimes improved holdout stability relative to SW, especially at larger window sizes where the model is trained on a substantial portion of the race. However, at very small window ratios (e.g., 5%), EW folds are short, in-window error is low, but the COS often rose — indicating the model was fitting narrow segments without generalizing to the tail of the race. The selection therefore balanced per-fold error and COS rather than minimizing in-window RMSE alone.
+
+### Selected Configurations per Circuit
+
+The table below records the final per-circuit model and window-ratio choices. These values are encoded as `lr_ew_window_ratio`, `xgb_ew_window_ratio`, and `xgb_sw_window_ratio` in each circuit's YAML configuration file. All other circuits or model combinations that are not the preferred variant can still be run but will fall back to `window_ratio`.
+
+| Grand Prix | Best LR approach | LR window | Best XGB approach | XGB window |
+|---|---|---|---|---|
+| Bahrain Grand Prix | LR-EW | 5% | XGB-EW | 30% |
+| Hungarian Grand Prix | LR-EW | 45% | XGB-SW | 50% |
+| Italian Grand Prix | LR-EW | 5% | XGB-SW | 30% |
+| Saudi Arabian Grand Prix | LR-EW | 10% | XGB-EW | 50% |
+| United States Grand Prix | LR-EW | 45% | XGB-EW | 5% |
+
+**Bahrain:** LR-EW with 5% was the clear winner — in-window error was the lowest of all EW window sizes and COS was well-behaved. For XGB, EW at 30% offered a good balance: per-fold performance was strong and holdout generalization was better than the 45% window, which had the best in-window scores but generalized slightly worse.
+
+**Hungary:** LR-EW required a large window (45%) to achieve stable holdout results; smaller windows produced poor COS values in this circuit. For XGB, SW at 50% was the most consistent option: per-fold error was low and COS indicated it maintained performance on the holdout. EW was also competitive at 50%, but SW was preferred.
+
+**Italy:** LR-EW performed well with a small 5% window, which stood out clearly among all EW options. XGB-SW at 30% offered the best COS among SW sizes; EW at 50% was also a reasonable alternative, but SW 30% was selected for better holdout stability.
+
+**Saudi Arabia:** LR-EW with 10% was the best performer and showed the lowest COS among EW sizes, meaning strong and stable generalization to the holdout. XGB-EW at 50% was selected because both SW and EW COS values at large window sizes were the most favourable; the XGB-EW 50% window delivered good in-fold error and maintained holdout performance.
+
+**USA:** LR-EW at 45% was the only window where LR produced acceptable holdout results and COS; smaller windows had poor generalization. For XGB, EW at 5% had notably lower in-window error and a better COS than other sizes, making it the clear choice despite the very small window size.
+
 ## Generated XGBoost Hyperparameter Tables
 
 The tables below summarize the latest saved XGBoost parameter artifacts from `Scripts/Results/xgboost/sw/params/`. They are kept in this root README because `Scripts/Results/` is treated as generated output and is normally ignored by Git.

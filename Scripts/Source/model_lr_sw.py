@@ -16,6 +16,7 @@ from modeling_utils import (
     build_sliding_windows,
     calc_holdout_ci,
     calc_stats,
+    decode_step_key,
     fit_predict_linear_regression,
     log_mlflow_run,
     load_cleaned_data,
@@ -76,9 +77,9 @@ def main():
     )
 
     print("\n--- Sequential split ---")
-    print(f"Total laps: {total_laps} (LapNumber {lap_min}-{lap_max})")
-    print(f"Modeling block: laps {lap_min}-{model_end_lap} | records={len(X_model_raw)}")
-    print(f"Holdout block: laps {holdout_start_lap}-{lap_max} | records={len(X_holdout_raw)}")
+    print(f"Total temporal steps: {total_laps} ({decode_step_key(lap_min)} → {decode_step_key(lap_max)})")
+    print(f"Modeling block: {decode_step_key(lap_min)}–{decode_step_key(model_end_lap)} | records={len(X_model_raw)}")
+    print(f"Holdout block: {decode_step_key(holdout_start_lap)}–{decode_step_key(lap_max)} | records={len(X_holdout_raw)}")
     print(f"Sliding windows: {len(windows)} | window={window_size} | train/val={train_size}/{val_size} | step={step_size}")
 
     results = {"window": [], "rmse": [], "mae": [], "r2": [], "std": []}
@@ -109,8 +110,8 @@ def main():
         results["std"].append(std_value)
 
         print(
-            f"Window {i:02d} | train laps {int(train_laps[0])}-{int(train_laps[-1])} | "
-            f"val laps {int(val_laps[0])}-{int(val_laps[-1])} | "
+            f"Window {i:02d} | train {decode_step_key(train_laps[0])}–{decode_step_key(train_laps[-1])} | "
+            f"val {decode_step_key(val_laps[0])}–{decode_step_key(val_laps[-1])} | "
             f"RMSE={rmse_value:.4f} | MAE={mae_value:.4f} | R2={r2_value:.4f}"
         )
 
@@ -173,11 +174,11 @@ def main():
     )
 
     split_info = {
-        "total_laps": total_laps,
-        "lap_min": lap_min,
-        "lap_max": lap_max,
-        "model_end_lap": model_end_lap,
-        "holdout_start_lap": holdout_start_lap,
+        "total_temporal_steps": total_laps,
+        "step_min": decode_step_key(lap_min),
+        "step_max": decode_step_key(lap_max),
+        "model_end_step": decode_step_key(model_end_lap),
+        "holdout_start_step": decode_step_key(holdout_start_lap),
         "model_records": len(X_model_raw),
         "holdout_records": len(X_holdout_raw),
         "sliding_windows": len(windows),

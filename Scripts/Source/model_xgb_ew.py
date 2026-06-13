@@ -17,6 +17,7 @@ from modeling_utils import (
     build_xgb_ew_params_path,
     calc_holdout_ci,
     calc_stats,
+    decode_step_key,
     json_ready,
     log_mlflow_run,
     load_cleaned_data,
@@ -158,8 +159,8 @@ def tune_or_load_params_ew(
 
         print(
             f"Running Optuna for fold {fold_id:02d}: "
-            f"train laps {int(train_laps[0])}-{int(train_laps[-1])} ({len(X_train)} records) | "
-            f"val laps {int(val_laps[0])}-{int(val_laps[-1])}"
+            f"train {decode_step_key(train_laps[0])} → {decode_step_key(train_laps[-1])} ({len(X_train)} records) | "
+            f"val {decode_step_key(val_laps[0])} → {decode_step_key(val_laps[-1])}"
         )
         study = optuna.create_study(direction="minimize", sampler=build_optuna_sampler(config))
         study.optimize(objective, n_trials=optuna_trials, show_progress_bar=False)
@@ -254,7 +255,7 @@ def main():
     print(f"Grand Prix: {target_gp_name}")
     print(
         "Config: "
-        f"holdout={config['holdout_ratio']} | window={config['window_ratio']} | "
+        f"holdout={config['holdout_ratio']} | window={config.get('xgb_ew_window_ratio', config['window_ratio'])} | "
         f"window_train={config['window_train_ratio']} | step={config['window_step_ratio']} | "
         f"alpha_cos={config['alpha_cos']} | beta_cos={config['beta_cos']} | "
         f"optuna_trials={config['optuna_trials']}"
@@ -287,15 +288,15 @@ def main():
 
     windows, window_size, train_size, val_size, step_size = build_expanding_windows(
         len(unique_laps),
-        float(config["window_ratio"]),
+        float(config.get("xgb_ew_window_ratio", config["window_ratio"])),
         float(config["window_train_ratio"]),
         float(config["window_step_ratio"]),
     )
 
     print("\n--- Sequential split ---")
-    print(f"Total laps: {total_laps} (LapNumber {lap_min}-{lap_max})")
-    print(f"Modeling block: laps {lap_min}-{model_end_lap} | records={len(X_model_raw)}")
-    print(f"Holdout block: laps {holdout_start_lap}-{lap_max} | records={len(X_holdout_raw)}")
+    print(f"Total temporal steps: {total_laps} ({decode_step_key(lap_min)} → {decode_step_key(lap_max)})")
+    print(f"Modeling block: {decode_step_key(lap_min)} – {decode_step_key(model_end_lap)} | records={len(X_model_raw)}")
+    print(f"Holdout block: {decode_step_key(holdout_start_lap)} – {decode_step_key(lap_max)} | records={len(X_holdout_raw)}")
     print(
         f"Expanding folds: {len(windows)} | initial_train={train_size} | "
         f"val_chunk={val_size} | step={step_size}"
@@ -313,7 +314,7 @@ def main():
         print(
             "Best individual validation fold by RMSE: "
             f"fold {selected_fold['fold']:02d} "
-            f"(val laps {selected_fold['val_lap_start']}-{selected_fold['val_lap_end']}, "
+            f"(val {decode_step_key(selected_fold['val_lap_start'])} → {decode_step_key(selected_fold['val_lap_end'])}, "
             f"RMSE={selected_fold['rmse']:.4f}, "
             f"MAE={selected_fold['mae']:.4f})."
         )
@@ -400,8 +401,8 @@ def main():
         results["std"].append(std_value)
 
         print(
-            f"Fold {i:02d} | train laps {int(train_laps[0])}-{int(train_laps[-1])} ({len(X_train)} records) | "
-            f"val laps {int(val_laps[0])}-{int(val_laps[-1])} | "
+            f"Fold {i:02d} | train {decode_step_key(train_laps[0])} → {decode_step_key(train_laps[-1])} ({len(X_train)} records) | "
+            f"val {decode_step_key(val_laps[0])} → {decode_step_key(val_laps[-1])} | "
             f"n_estimators={eval_n} | RMSE={rmse_value:.4f} | MAE={mae_value:.4f} | R2={r2_value:.4f}"
         )
 
@@ -437,11 +438,11 @@ def main():
     )
 
     split_info = {
-        "total_laps": total_laps,
-        "lap_min": lap_min,
-        "lap_max": lap_max,
-        "model_end_lap": model_end_lap,
-        "holdout_start_lap": holdout_start_lap,
+        "total_temporal_steps": total_laps,
+        "step_min": decode_step_key(lap_min),
+        "step_max": decode_step_key(lap_max),
+        "model_end_step": decode_step_key(model_end_lap),
+        "holdout_start_step": decode_step_key(holdout_start_lap),
         "model_records": len(X_model_raw),
         "holdout_records": len(X_holdout_raw),
         "expanding_folds": len(windows),

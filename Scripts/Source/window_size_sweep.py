@@ -1,12 +1,11 @@
 """Window size sensitivity sweep across SW and EW validation for LR and XGBoost.
 
-For each window size in the configured range, runs SW and EW validation with both
-Linear Regression and XGBoost. XGBoost uses pre-tuned parameters (loaded from the
-SW params JSON saved by model_xgb_sw.py). Optuna is NOT re-run per window size in
-the sweep — the goal is to compare window sizes under fixed hyperparameters, not
-to retune for every combination.
+For each window size in the configured range, runs Optuna hyperparameter tuning
+for XGBoost using the windows of that size and scheme (SW or EW). Each combination
+of (window_size, scheme) gets its own tuned hyperparameters, saved to a JSON file
+and used for both CV evaluation and the final holdout model.
 
-Results are saved to a CSV at the path defined in the YAML configuration file.
+LR has no hyperparameters — a fresh OLS model is fitted per window.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import optuna
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -23,10 +23,10 @@ from modeling_utils import (
     build_expanding_windows,
     build_sequential_split,
     build_sliding_windows,
-    build_xgb_params_path,
     calc_holdout_ci,
     calc_stats,
     fit_predict_linear_regression,
+    json_ready,
     load_cleaned_data,
     prepare_raw_features,
     resolve_repo_path,
@@ -36,37 +36,118 @@ from modeling_utils import (
 )
 from xgb_utils import (
     BASE_XGB_PARAMS,
+    XGB_SEARCH_SPACE_VERSION,
+    aggregate_window_params,
+    build_optuna_sampler,
     build_xgb_matrix,
     build_xgb_search_space,
+    median_n_estimators,
+    suggest_xgb_params,
+    window_train_params,
 )
 
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-def _load_xgb_fixed_params(params_path: Path, config: dict):
-    """Load pre-tuned XGBoost params from SW params JSON, or fall back to defaults."""
-    if params_path.exists():
-        with params_path.open("r", encoding="utf-8") as file:
-            loaded = json.load(file)
-        excluded = {
-            "n_estimators", "search_space_version", "tuning_strategy", "search_space",
-            "optuna_sampler", "selected_window", "per_window_params", "aggregation_window_count",
-            "aggregation_windows", "aggregated_param_source_values", "n_estimators_source",
-            "n_estimators_source_values",
+
+# ---------------------------------------------------------------------------
+# Objective factory (avoids closure-over-loop-variable bug)
+# ---------------------------------------------------------------------------
+
+def _make_objective(X_train, y_train, X_val, y_val, cat_cols, config, search_space):
+    def objective(trial):
+        params = {
+            **BASE_XGB_PARAMS,
+            "seed": int(config["random_seed"]),
+            **suggest_xgb_params(trial, search_space),
         }
-        train_params = {k: v for k, v in loaded.items() if k not in excluded}
-        best_n = int(loaded.get("n_estimators", 100))
-        train_params = {**BASE_XGB_PARAMS, **train_params, "seed": int(config["random_seed"])}
-        return train_params, best_n
-    # Fall back to XGBoost defaults with a reasonable n_estimators
-    search_space = build_xgb_search_space(config)
-    default_params = {
-        **BASE_XGB_PARAMS,
-        "seed": int(config["random_seed"]),
-        "learning_rate": float(search_space["learning_rate"]["low"]),
-        "max_depth": int(search_space["max_depth"]["low"]),
-    }
-    print(f"WARNING: No pre-tuned XGBoost params found at {params_path}. Using defaults.")
-    return default_params, 100
+        dtrain, dval, _, _ = build_xgb_matrix(X_train, X_val, y_train, y_val, cat_cols)
+        booster = xgb.train(
+            params=params,
+            dtrain=dtrain,
+            num_boost_round=5000,
+            evals=[(dval, "validation")],
+            early_stopping_rounds=100,
+            verbose_eval=False,
+        )
+        best_iter = booster.best_iteration + 1
+        preds = booster.predict(dval, iteration_range=(0, best_iter))
+        trial.set_user_attr("n_estimators", best_iter)
+        return float(np.sqrt(mean_squared_error(y_val, preds)))
+    return objective
 
+
+# ---------------------------------------------------------------------------
+# Per-scheme Optuna tuning
+# ---------------------------------------------------------------------------
+
+def _tune_xgb(windows, unique_laps, lap_model_sorted, X_model_raw, y_model, cat_cols, config, label):
+    """Tune XGBoost hyperparameters on a set of windows (SW or EW).
+
+    Returns (train_params, best_n, window_summaries) or (None, None, None) if
+    all windows are empty.
+    """
+    search_space = build_xgb_search_space(config)
+    optuna_trials = int(config["optuna_trials"])
+
+    window_summaries = []
+    for fold_id, (start, split, end) in enumerate(windows, start=1):
+        train_laps = unique_laps[start:split]
+        val_laps = unique_laps[split:end]
+        train_mask = lap_model_sorted.isin(train_laps)
+        val_mask = lap_model_sorted.isin(val_laps)
+        X_train = X_model_raw.loc[train_mask]
+        y_train = y_model.loc[train_mask]
+        X_val = X_model_raw.loc[val_mask]
+        y_val = y_model.loc[val_mask]
+        if len(X_train) == 0 or len(X_val) == 0:
+            continue
+
+        study = optuna.create_study(
+            direction="minimize", sampler=build_optuna_sampler(config)
+        )
+        study.optimize(
+            _make_objective(X_train, y_train, X_val, y_val, cat_cols, config, search_space),
+            n_trials=optuna_trials,
+            show_progress_bar=False,
+        )
+        best = study.best_trial
+        window_summaries.append({
+            "window": fold_id,
+            "n_estimators": int(best.user_attrs["n_estimators"]),
+            "params": {k: json_ready(v) for k, v in best.params.items()},
+            "rmse": float(best.value),
+        })
+
+    if not window_summaries:
+        return None, None, None
+
+    aggregated_params, aggregated_source_values = aggregate_window_params(window_summaries, search_space)
+    best_n = median_n_estimators(window_summaries)
+    agg_summary = {"window": "aggregated", "params": aggregated_params}
+    train_params = window_train_params(agg_summary, config)
+    return train_params, best_n, window_summaries
+
+
+def _save_xgb_params(params_path: Path, train_params, best_n, window_summaries, search_space, config, scheme, window_ratio):
+    payload = {
+        **{k: v for k, v in train_params.items() if k not in BASE_XGB_PARAMS},
+        "n_estimators": best_n,
+        "search_space_version": XGB_SEARCH_SPACE_VERSION,
+        "tuning_strategy": f"window_sweep_{scheme}_per_fold_median_v1",
+        "window_ratio": window_ratio,
+        "scheme": scheme,
+        "search_space": build_xgb_search_space(config),
+        "optuna_sampler": str(config.get("xgb_optuna_sampler", "tpe")).lower(),
+        "per_fold_params": window_summaries,
+    }
+    params_path.parent.mkdir(parents=True, exist_ok=True)
+    with params_path.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=4)
+
+
+# ---------------------------------------------------------------------------
+# Window evaluation helpers
+# ---------------------------------------------------------------------------
 
 def _run_lr_windows(windows, unique_laps, lap_model_sorted, X_model_raw, y_model, cat_cols):
     results = {"rmse": [], "mae": [], "r2": [], "std": []}
@@ -111,7 +192,8 @@ def _run_xgb_windows(windows, unique_laps, lap_model_sorted, X_model_raw, y_mode
 
 
 def _aggregate_results(
-    window_results, y_holdout, preds_holdout, seed, alpha_cos, beta_cos, label, window_ratio
+    window_results, y_holdout, preds_holdout, seed, alpha_cos, beta_cos, label, window_ratio,
+    params_path=None, best_n=None,
 ):
     if not window_results["rmse"]:
         return None
@@ -137,6 +219,8 @@ def _aggregate_results(
         "window_ratio": window_ratio,
         "validation": label,
         "n_folds": len(window_results["rmse"]),
+        "xgb_n_estimators": best_n,
+        "tuned_params_path": str(params_path) if params_path else None,
         "ew_or_sw_rmse_mean": rmse_m,
         "ew_or_sw_rmse_ci_lower": rmse_l,
         "ew_or_sw_rmse_ci_upper": rmse_u,
@@ -168,6 +252,10 @@ def _aggregate_results(
     }
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     target_gp_name, config, repo_root, laps_cleaned = load_cleaned_data(Path(__file__))
     df_base = laps_cleaned.copy()
@@ -178,7 +266,7 @@ def main():
     X_raw, y_raw, valid_indices = prepare_raw_features(df_base, num_cols, cat_cols, target_col)
 
     sweep_min = float(config.get("window_size_sweep_min", 0.05))
-    sweep_max = float(config.get("window_size_sweep_max", 0.50))
+    sweep_max = float(config.get("window_size_sweep_max", 0.55))
     sweep_step = float(config.get("window_size_sweep_step", 0.05))
     alpha_cos = float(config["alpha_cos"])
     beta_cos = float(config["beta_cos"])
@@ -188,6 +276,9 @@ def main():
     sweep_results_dir = resolve_repo_path(
         repo_root, str(config.get("window_sweep_results_dir", "Scripts/Results/window_sweep"))
     )
+    params_dir = resolve_repo_path(
+        repo_root, str(config.get("window_sweep_params_dir", "Scripts/Results/window_sweep/params"))
+    )
     filename_template = str(
         config.get("window_sweep_results_filename_template", "{safe_gp_name}_window_sweep_results.csv")
     )
@@ -195,24 +286,20 @@ def main():
         target_gp_name=target_gp_name, safe_gp_name=safe_name
     )
 
-    print("--- WINDOW SIZE SWEEP ---")
+    print("--- WINDOW SIZE SWEEP (with per-combo Optuna tuning) ---")
     print(f"Grand Prix: {target_gp_name}")
     print(f"Sweep range: {sweep_min:.0%} to {sweep_max:.0%} in steps of {sweep_step:.0%}")
     print(f"Output: {sweep_output_path}")
+    print(f"Params dir: {params_dir}")
 
     if sweep_output_path.exists():
         print(f"WARNING: Output file already exists: {sweep_output_path}")
-        print("Results will be overwritten. Move the file manually to preserve previous results.")
+        print("Results will be overwritten.")
 
     (
-        lap_series,
-        lap_min,
-        lap_max,
-        model_idx,
-        holdout_idx,
-        holdout_start_lap,
-        model_end_lap,
-        total_laps,
+        lap_series, lap_min, lap_max,
+        model_idx, holdout_idx,
+        holdout_start_lap, model_end_lap, total_laps,
     ) = build_sequential_split(df_base, valid_indices, float(config["holdout_ratio"]), lap_col)
 
     X_model_raw = X_raw.loc[model_idx].copy()
@@ -227,30 +314,22 @@ def main():
     lap_model_sorted = model_laps.loc[model_order_idx].reset_index(drop=True)
     unique_laps = np.sort(pd.to_numeric(lap_model_sorted, errors="coerce").dropna().unique())
 
-    xgb_params_path = build_xgb_params_path(repo_root, config)
-    xgb_train_params, xgb_best_n = _load_xgb_fixed_params(xgb_params_path, config)
-    print(f"XGBoost params: loaded from {xgb_params_path} | n_estimators={xgb_best_n}")
-
-    # Final LR model on full modeling block (shared across all window sizes)
-    preds_holdout_lr, *_ = fit_predict_linear_regression(X_model_raw, y_model, X_holdout_raw, cat_cols)
-
-    # Final XGBoost model on full modeling block (shared across all window sizes)
-    dmodel_full, dholdout, _, _ = build_xgb_matrix(X_model_raw, X_holdout_raw, y_model, y_holdout, cat_cols)
-    final_xgb_model = xgb.train(
-        params=xgb_train_params, dtrain=dmodel_full, num_boost_round=xgb_best_n, verbose_eval=False
+    # LR holdout is fixed (same model regardless of window size)
+    preds_holdout_lr, *_ = fit_predict_linear_regression(
+        X_model_raw, y_model, X_holdout_raw, cat_cols
     )
-    preds_holdout_xgb = final_xgb_model.predict(dholdout)
 
     n_steps = round((sweep_max - sweep_min) / sweep_step)
     window_ratios = [round(sweep_min + i * sweep_step, 10) for i in range(n_steps + 1)]
     window_ratios = [r for r in window_ratios if r <= sweep_max + 1e-9]
 
-    all_rows = []
     train_ratio = float(config["window_train_ratio"])
     step_ratio = float(config["window_step_ratio"])
+    all_rows = []
 
     for window_ratio in window_ratios:
         print(f"\n--- window_ratio={window_ratio:.2%} ---")
+
         try:
             sw_windows, _, _, _, _ = build_sliding_windows(
                 len(unique_laps), window_ratio, train_ratio, step_ratio
@@ -266,41 +345,83 @@ def main():
             print(f"  EW skipped: {err}")
             ew_windows = []
 
-        combos = [
-            ("sw", "lr", sw_windows),
-            ("ew", "lr", ew_windows),
-            ("sw", "xgb", sw_windows),
-            ("ew", "xgb", ew_windows),
-        ]
+        window_pct = int(round(window_ratio * 100))
 
-        for validation, model_name, windows in combos:
+        # ---- LR (no tuning) ------------------------------------------------
+        for scheme, windows in [("sw", sw_windows), ("ew", ew_windows)]:
             if not windows:
                 continue
-            label = f"{model_name}_{validation}"
+            label = f"lr_{scheme}"
             print(f"  {label}: {len(windows)} folds", end=" | ", flush=True)
-
-            if model_name == "lr":
-                w_results = _run_lr_windows(
-                    windows, unique_laps, lap_model_sorted, X_model_raw, y_model, cat_cols
-                )
-                preds_ho = preds_holdout_lr
-            else:
-                w_results = _run_xgb_windows(
-                    windows, unique_laps, lap_model_sorted, X_model_raw, y_model, cat_cols,
-                    xgb_train_params, xgb_best_n
-                )
-                preds_ho = preds_holdout_xgb
-
+            w_results = _run_lr_windows(
+                windows, unique_laps, lap_model_sorted, X_model_raw, y_model, cat_cols
+            )
             row = _aggregate_results(
-                w_results, y_holdout, preds_ho, seed, alpha_cos, beta_cos, label, window_ratio
+                w_results, y_holdout, preds_holdout_lr, seed,
+                alpha_cos, beta_cos, label, window_ratio,
             )
             if row:
-                row["model"] = model_name
+                row["model"] = "lr"
                 all_rows.append(row)
                 print(
                     f"RMSE_folds={row['ew_or_sw_rmse_mean']:.4f} | "
                     f"RMSE_holdout={row['holdout_rmse']:.4f} | "
                     f"COS_RMSE={row['cos_rmse']:.4f}"
+                )
+
+        # ---- XGB (Optuna tuning per scheme) --------------------------------
+        for scheme, windows in [("sw", sw_windows), ("ew", ew_windows)]:
+            if not windows:
+                continue
+            label = f"xgb_{scheme}"
+            params_path = params_dir / f"{safe_name}_xgb_{scheme}_{window_pct}pct_params.json"
+
+            print(
+                f"  {label}: {len(windows)} folds | tuning with {config['optuna_trials']} Optuna trials ...",
+                flush=True,
+            )
+            train_params, best_n, window_summaries = _tune_xgb(
+                windows, unique_laps, lap_model_sorted,
+                X_model_raw, y_model, cat_cols, config, label,
+            )
+            if train_params is None:
+                print(f"  {label}: skipped (no valid folds after tuning)")
+                continue
+
+            _save_xgb_params(
+                params_path, train_params, best_n, window_summaries,
+                build_xgb_search_space(config), config, scheme, window_ratio,
+            )
+
+            # Evaluate CV with tuned params
+            w_results = _run_xgb_windows(
+                windows, unique_laps, lap_model_sorted,
+                X_model_raw, y_model, cat_cols, train_params, best_n,
+            )
+
+            # Holdout with tuned params (trained on full modeling block)
+            dmodel_full, dholdout, _, _ = build_xgb_matrix(
+                X_model_raw, X_holdout_raw, y_model, y_holdout, cat_cols
+            )
+            final_model = xgb.train(
+                params=train_params, dtrain=dmodel_full,
+                num_boost_round=best_n, verbose_eval=False,
+            )
+            preds_holdout_xgb = final_model.predict(dholdout)
+
+            row = _aggregate_results(
+                w_results, y_holdout, preds_holdout_xgb, seed,
+                alpha_cos, beta_cos, label, window_ratio,
+                params_path=params_path, best_n=best_n,
+            )
+            if row:
+                row["model"] = "xgb"
+                all_rows.append(row)
+                print(
+                    f"  {label}: RMSE_folds={row['ew_or_sw_rmse_mean']:.4f} | "
+                    f"RMSE_holdout={row['holdout_rmse']:.4f} | "
+                    f"COS_RMSE={row['cos_rmse']:.4f} | "
+                    f"n_est={best_n}"
                 )
 
     if not all_rows:
@@ -309,11 +430,17 @@ def main():
 
     sweep_results_dir.mkdir(parents=True, exist_ok=True)
     results_df = pd.DataFrame(all_rows)
-    col_order = ["window_ratio", "validation", "model"] + [c for c in results_df.columns if c not in {"window_ratio", "validation", "model"}]
+    col_order = (
+        ["window_ratio", "validation", "model", "n_folds", "xgb_n_estimators", "tuned_params_path"]
+        + [c for c in results_df.columns if c not in {
+            "window_ratio", "validation", "model", "n_folds", "xgb_n_estimators", "tuned_params_path"
+        }]
+    )
+    col_order = [c for c in col_order if c in results_df.columns]
     results_df = results_df[col_order]
     results_df.to_csv(sweep_output_path, index=False)
     print(f"\nSaved sweep results to: {sweep_output_path}")
-    print(f"Total rows: {len(results_df)} ({len(window_ratios)} window sizes × up to 4 model/validation combos)")
+    print(f"Total rows: {len(results_df)} ({len(window_ratios)} window sizes × up to 4 combos)")
 
 
 if __name__ == "__main__":

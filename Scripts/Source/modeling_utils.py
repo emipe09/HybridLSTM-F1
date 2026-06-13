@@ -50,6 +50,7 @@ REQUIRED_CONFIG_KEYS = [
     "random_seed",
     "optuna_trials",
     "use_saved_xgb_params",
+    "use_saved_lstm_params",
     "mlflow_enabled",
     "mlflow_tracking_uri",
     "mlflow_experiment_name",
@@ -294,6 +295,7 @@ def log_mlflow_run(
     )
     run_name = f"{safe_name}-{model_name}-{validation_mode}"
 
+    os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
 
@@ -550,32 +552,68 @@ def build_expanding_windows(n_laps, window_ratio, train_ratio, step_ratio):
     return windows, window_size, train_size, val_size, step_size
 
 
+def decode_step_key(key):
+    """Decode a composite (Year*10000 + LapNumber) key to a human-readable string."""
+    k = int(key)
+    return f"lap {k % 10000} year {k // 10000}"
+
+
 def build_sequential_split(df_base, valid_indices, holdout_ratio, lap_col):
+    """Split data into modeling and holdout blocks using temporal ordering.
+
+    If a 'Year' column exists the split is performed on unique (Year, LapNumber)
+    pairs ordered chronologically, so the holdout contains the most recent laps
+    across years rather than the highest lap numbers.  When no 'Year' column is
+    present the function falls back to LapNumber-only ordering.
+
+    The returned step_series contains composite keys (Year*10000 + LapNumber)
+    when Year is available, or raw LapNumber values otherwise.  All downstream
+    code should use step_series for sorting and masking rather than raw LapNumber.
+    """
     if lap_col not in df_base.columns:
         raise KeyError(f"Column '{lap_col}' not found.")
 
-    lap_series = df_base.loc[valid_indices, lap_col]
-    if lap_series.dropna().empty:
+    lap_raw = df_base.loc[valid_indices, lap_col]
+    if lap_raw.dropna().empty:
         raise ValueError("No valid lap values are available.")
 
-    lap_min = int(np.floor(lap_series.min()))
-    lap_max = int(np.floor(lap_series.max()))
-    total_laps = lap_max - lap_min + 1
+    if "Year" in df_base.columns:
+        year_raw = df_base.loc[valid_indices, "Year"].astype(int)
+        step_series = year_raw * 10000 + lap_raw.astype(int)
+    else:
+        step_series = lap_raw.copy()
 
-    holdout_laps = max(1, int(np.ceil(total_laps * holdout_ratio)))
-    holdout_laps = min(holdout_laps, total_laps - 1)
-    holdout_start_lap = lap_max - holdout_laps + 1
-    model_end_lap = holdout_start_lap - 1
+    unique_steps = np.sort(pd.to_numeric(step_series, errors="coerce").dropna().unique())
+    total_laps = len(unique_steps)
 
-    model_mask = (lap_series >= lap_min) & (lap_series <= model_end_lap)
-    holdout_mask = (lap_series >= holdout_start_lap) & (lap_series <= lap_max)
-    model_idx = lap_series[model_mask].index
-    holdout_idx = lap_series[holdout_mask].index
+    holdout_count = max(1, int(np.ceil(total_laps * holdout_ratio)))
+    holdout_count = min(holdout_count, total_laps - 1)
+    model_steps = unique_steps[: total_laps - holdout_count]
+    holdout_steps = unique_steps[total_laps - holdout_count :]
+
+    model_mask = step_series.isin(model_steps)
+    holdout_mask = step_series.isin(holdout_steps)
+    model_idx = step_series[model_mask].index
+    holdout_idx = step_series[holdout_mask].index
 
     if len(model_idx) == 0 or len(holdout_idx) == 0:
         raise ValueError("Invalid sequential split: modeling or holdout block is empty.")
 
-    return lap_series, lap_min, lap_max, model_idx, holdout_idx, holdout_start_lap, model_end_lap, total_laps
+    step_min = int(unique_steps[0])
+    step_max = int(unique_steps[-1])
+    holdout_start_step = int(holdout_steps[0])
+    model_end_step = int(model_steps[-1])
+
+    return (
+        step_series,
+        step_min,
+        step_max,
+        model_idx,
+        holdout_idx,
+        holdout_start_step,
+        model_end_step,
+        total_laps,
+    )
 
 
 def summarize_cos(results, mae_m, rmse_m, mae_holdout, rmse_holdout, std_m, std_holdout, alpha_cos, beta_cos):

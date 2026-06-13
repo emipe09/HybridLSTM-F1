@@ -28,6 +28,7 @@ Scripts/Notebooks/*_xgb_params_sw.json
 Scripts/Notebooks/comparison_ci.png
 
 # Local editor and OS files
+.claude/
 .vscode/
 Thumbs.db
 Desktop.ini
