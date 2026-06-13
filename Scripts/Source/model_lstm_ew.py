@@ -504,9 +504,17 @@ def main():
     unique_laps = np.sort(pd.to_numeric(lap_model_sorted, errors="coerce").dropna().unique())
     n_model_laps = len(unique_laps)
 
-    # sequence_length = window_ratio × n_modeling_laps (window IS the LSTM lookback)
+    # sequence_length = window_ratio × n_race_laps.
+    # Use unique raw LapNumber values (not composite Year*10000+Lap keys) so the
+    # lookback window is expressed in race laps, matching the XGBoost window ratio intent.
     ew_window_ratio = float(config.get("lstm_ew_window_ratio", config["window_ratio"]))
-    sequence_length = max(1, int(np.ceil(n_model_laps * ew_window_ratio)))
+    if "Year" in df_base.columns:
+        n_race_laps = len(
+            pd.to_numeric(df_base.loc[model_order_idx, lap_col], errors="coerce").dropna().unique()
+        )
+    else:
+        n_race_laps = n_model_laps
+    sequence_length = max(1, int(np.ceil(n_race_laps * ew_window_ratio)))
     lstm_cfg["lstm_sequence_length"] = sequence_length
     lstm_cfg["lstm_sequence_length_source"] = "lstm_ew_window_ratio_times_modeling_laps"
 
