@@ -77,7 +77,7 @@ ew_lr_model_metadata_filename_template: "{safe_gp_name}_lr_model_ew_metadata.jso
 ew_lstm_models_subdir: "lstm/ew/models"
 ew_lstm_model_filename_template: "{safe_gp_name}_lstm_model_ew.keras"
 ew_lstm_model_metadata_filename_template: "{safe_gp_name}_lstm_model_ew_metadata.json"
-lstm_ew_window_ratio: 0.30
+lstm_ew_window_ratio: 0.08
 # Window size sweep configuration
 window_size_sweep_min: 0.05
 window_size_sweep_max: 0.55
