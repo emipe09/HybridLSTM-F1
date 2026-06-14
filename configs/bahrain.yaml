@@ -41,7 +41,7 @@ lstm_optuna_trials: 20
 lstm_tuning_epochs: 40
 lstm_tuning_patience: 5
 lstm_min_final_epochs: 20
-lstm_group_cols: [Year, Driver]
+lstm_group_cols: [Year]
 optuna_trials: 100
 use_saved_xgb_params: true
 use_saved_lstm_params: false
