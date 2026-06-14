@@ -187,12 +187,12 @@ def suggest_lstm_config(trial, base_cfg: dict) -> dict:
     tuned = dict(base_cfg)
     tuned.update(
         {
-            "lstm_units": trial.suggest_categorical("lstm_units", [32, 64, 128]),
-            "lstm_dense_units": trial.suggest_categorical("lstm_dense_units", [16, 32, 64]),
-            "lstm_dropout": trial.suggest_float("lstm_dropout", 0.0, 0.30),
+            "lstm_units": trial.suggest_categorical("lstm_units", [64, 128, 256]),
+            "lstm_dense_units": trial.suggest_categorical("lstm_dense_units", [32, 64, 128]),
+            "lstm_dropout": trial.suggest_float("lstm_dropout", 0.0, 0.15),
             "lstm_recurrent_dropout": trial.suggest_float("lstm_recurrent_dropout", 0.0, 0.20),
-            "lstm_learning_rate": trial.suggest_float("lstm_learning_rate", 5e-5, 1e-3, log=True),
-            "lstm_batch_size": trial.suggest_categorical("lstm_batch_size", [16, 32]),
+            "lstm_learning_rate": trial.suggest_float("lstm_learning_rate", 5e-5, 2e-3, log=True),
+            "lstm_batch_size": 16,
             "lstm_epochs": int(base_cfg["lstm_tuning_epochs"]),
             "lstm_patience": int(base_cfg["lstm_tuning_patience"]),
         }
