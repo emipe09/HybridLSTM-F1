@@ -38,8 +38,8 @@ lstm_reduce_lr_patience: 4
 lstm_min_learning_rate: 0.00001
 lstm_tuning_enabled: true
 lstm_optuna_trials: 20
-lstm_tuning_epochs: 40
-lstm_tuning_patience: 5
+lstm_tuning_epochs: 60
+lstm_tuning_patience: 8
 lstm_min_final_epochs: 20
 lstm_group_cols: [Year]
 optuna_trials: 100

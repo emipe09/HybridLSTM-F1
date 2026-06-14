@@ -50,7 +50,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover
     ) from exc
 
 
-LSTM_SEARCH_SPACE_VERSION = "v2"
+LSTM_SEARCH_SPACE_VERSION = "v3"
 LSTM_TUNING_STRATEGY = "single_sequential_split_v1"
 
 DEFAULT_LSTM_CONFIG = {
@@ -65,7 +65,7 @@ DEFAULT_LSTM_CONFIG = {
     "lstm_reduce_lr_factor": 0.5,
     "lstm_reduce_lr_patience": 4,
     "lstm_min_learning_rate": 0.00001,
-    "lstm_group_cols": ["Year", "Driver"],
+    "lstm_group_cols": ["Year"],
     "lstm_tuning_enabled": True,
     "lstm_optuna_trials": 20,
     "lstm_tuning_epochs": 40,
@@ -180,6 +180,7 @@ def make_lstm_model(sequence_length: int, n_features: int, lstm_cfg: dict):
                 dropout=float(lstm_cfg["lstm_dropout"]),
                 recurrent_dropout=float(lstm_cfg["lstm_recurrent_dropout"]),
             ),
+            tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Dense(int(lstm_cfg["lstm_dense_units"]), activation="relu"),
             tf.keras.layers.Dense(1),
         ]
@@ -189,15 +190,22 @@ def make_lstm_model(sequence_length: int, n_features: int, lstm_cfg: dict):
 
 
 def suggest_lstm_config(trial, base_cfg: dict) -> dict:
+    # Search space narrowed based on empirical trial results (v2→v3):
+    # - lstm_units: 256 removed (never competitive), 32 kept for regularization
+    # - lstm_dense_units: 16 removed (consistently poor), 128 kept for capacity
+    # - lstm_dropout: ceiling 0.40→0.20 (all top trials clustered below 0.15)
+    # - lstm_recurrent_dropout: ceiling 0.30→0.25 (marginal cut, values >0.28 never won)
+    # - lstm_learning_rate: floor 5e-5→1e-4 (sub-1e-4 rates never appeared in best trials)
+    # - lstm_batch_size: 16 removed (consistently the worst option)
     tuned = dict(base_cfg)
     tuned.update(
         {
-            "lstm_units": trial.suggest_categorical("lstm_units", [32, 64, 128, 256]),
-            "lstm_dense_units": trial.suggest_categorical("lstm_dense_units", [16, 32, 64, 128]),
-            "lstm_dropout": trial.suggest_float("lstm_dropout", 0.0, 0.40),
-            "lstm_recurrent_dropout": trial.suggest_float("lstm_recurrent_dropout", 0.0, 0.30),
-            "lstm_learning_rate": trial.suggest_float("lstm_learning_rate", 5e-5, 2e-3, log=True),
-            "lstm_batch_size": trial.suggest_categorical("lstm_batch_size", [16, 32, 64]),
+            "lstm_units": trial.suggest_categorical("lstm_units", [32, 64, 128]),
+            "lstm_dense_units": trial.suggest_categorical("lstm_dense_units", [32, 64, 128]),
+            "lstm_dropout": trial.suggest_float("lstm_dropout", 0.0, 0.20),
+            "lstm_recurrent_dropout": trial.suggest_float("lstm_recurrent_dropout", 0.0, 0.25),
+            "lstm_learning_rate": trial.suggest_float("lstm_learning_rate", 1e-4, 2e-3, log=True),
+            "lstm_batch_size": trial.suggest_categorical("lstm_batch_size", [32, 64]),
             "lstm_epochs": int(base_cfg["lstm_tuning_epochs"]),
             "lstm_patience": int(base_cfg["lstm_tuning_patience"]),
         }
