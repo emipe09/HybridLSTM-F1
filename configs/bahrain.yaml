@@ -77,7 +77,7 @@ ew_lr_model_metadata_filename_template: "{safe_gp_name}_lr_model_ew_metadata.jso
 lstm_params_subdir: "lstm/params"
 lstm_params_filename_template: "{safe_gp_name}_lstm_params.json"
 lstm_trials_filename_template: "{safe_gp_name}_lstm_optuna_trials.csv"
-lstm_window_ratio: 0.20
+lstm_window_ratio: 0.05
 # Window size sweep configuration
 window_size_sweep_min: 0.05
 window_size_sweep_max: 0.55
