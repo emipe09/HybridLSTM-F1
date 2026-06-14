@@ -11,9 +11,9 @@ xgb_model_metadata_filename_template: "{safe_gp_name}_xgb_model_sw_metadata.json
 lr_models_subdir: "linear_regression/sw/models"
 lr_model_filename_template: "{safe_gp_name}_lr_model_sw.pkl"
 lr_model_metadata_filename_template: "{safe_gp_name}_lr_model_sw_metadata.json"
-lstm_models_subdir: "lstm/sw/models"
-lstm_model_filename_template: "{safe_gp_name}_lstm_model_sw.keras"
-lstm_model_metadata_filename_template: "{safe_gp_name}_lstm_model_sw_metadata.json"
+lstm_models_subdir: "lstm/models"
+lstm_model_filename_template: "{safe_gp_name}_lstm_model.keras"
+lstm_model_metadata_filename_template: "{safe_gp_name}_lstm_model_metadata.json"
 target_col: "LapTime_seconds"
 lap_col: "LapNumber"
 numerical_features: [TyreLife, LapNumber, Humidity_RBF_Median, Pressure_RBF_Median, TrackTemp_RBF_Median, WindSpeed_RBF_Median, LapTime_prev]
@@ -37,7 +37,7 @@ lstm_reduce_lr_factor: 0.50
 lstm_reduce_lr_patience: 4
 lstm_min_learning_rate: 0.00001
 lstm_tuning_enabled: true
-lstm_optuna_trials: 8
+lstm_optuna_trials: 20
 lstm_tuning_epochs: 40
 lstm_tuning_patience: 5
 lstm_min_final_epochs: 20
@@ -74,10 +74,10 @@ ew_xgb_model_metadata_filename_template: "{safe_gp_name}_xgb_model_ew_metadata.j
 ew_lr_models_subdir: "linear_regression/ew/models"
 ew_lr_model_filename_template: "{safe_gp_name}_lr_model_ew.pkl"
 ew_lr_model_metadata_filename_template: "{safe_gp_name}_lr_model_ew_metadata.json"
-ew_lstm_models_subdir: "lstm/ew/models"
-ew_lstm_model_filename_template: "{safe_gp_name}_lstm_model_ew.keras"
-ew_lstm_model_metadata_filename_template: "{safe_gp_name}_lstm_model_ew_metadata.json"
-lstm_ew_window_ratio: 0.05
+lstm_params_subdir: "lstm/params"
+lstm_params_filename_template: "{safe_gp_name}_lstm_params.json"
+lstm_trials_filename_template: "{safe_gp_name}_lstm_optuna_trials.csv"
+lstm_window_ratio: 0.05
 # Window size sweep configuration
 window_size_sweep_min: 0.05
 window_size_sweep_max: 0.55

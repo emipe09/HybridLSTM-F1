@@ -31,7 +31,7 @@ MODEL_SCRIPTS = {
     "lr_ew": "model_lr_ew.py",
     "xgb": "model_xgb_sw.py",
     "xgb_ew": "model_xgb_ew.py",
-    "lstm": "model_lstm_ew.py",
+    "lstm": "model_lstm.py",
     "sweep": "window_size_sweep.py",
     "search_space_sweep": "search_space_sweep.py",
 }

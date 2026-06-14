@@ -1,13 +1,17 @@
 """LSTM with single sequential train/val split and sequential holdout.
 
 Validation protocol:
-  - Sequence length  = ceil(n_modeling_laps * lstm_ew_window_ratio)
-                       i.e. the window IS the LSTM lookback (steps).
+  - Sequence length  = ceil(n_race_laps * lstm_window_ratio)
   - Modeling block   = first (1 - holdout_ratio) of all laps.
   - Train split      = first window_train_ratio of the modeling block.
   - Val split        = remaining (1 - window_train_ratio) of the modeling block.
   - Holdout          = last holdout_ratio of all laps (never used during training or tuning).
   - Final model      = retrained on full modeling block for the calibrated epoch count.
+
+Single sequential split is used instead of expanding/sliding window because:
+  - With grouping by (Year, Driver), each group contributes ~50 sequences after windowing.
+  - Multiple folds would fragment this already small pool and multiply training cost linearly.
+  - EarlyStopping on val_loss robustly calibrates the epoch count on the single split.
 """
 
 from __future__ import annotations
@@ -42,13 +46,14 @@ try:
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise ModuleNotFoundError(
         "TensorFlow is required for the LSTM model. Install project dependencies with "
-        "`pip install -r Utils/requirements.txt` before running model_lstm_ew.py."
+        "`pip install -r Utils/requirements.txt` before running model_lstm.py."
     ) from exc
 
 
-LSTM_SEARCH_SPACE_VERSION = "v1"
+LSTM_SEARCH_SPACE_VERSION = "v2"
+LSTM_TUNING_STRATEGY = "single_sequential_split_v1"
 
-DEFAULT_LSTM_EW_CONFIG = {
+DEFAULT_LSTM_CONFIG = {
     "lstm_units": 64,
     "lstm_dense_units": 32,
     "lstm_dropout": 0.2,
@@ -60,49 +65,49 @@ DEFAULT_LSTM_EW_CONFIG = {
     "lstm_reduce_lr_factor": 0.5,
     "lstm_reduce_lr_patience": 4,
     "lstm_min_learning_rate": 0.00001,
-    "lstm_group_cols": [],
+    "lstm_group_cols": ["Year", "Driver"],
     "lstm_tuning_enabled": True,
-    "lstm_optuna_trials": 15,
+    "lstm_optuna_trials": 20,
     "lstm_tuning_epochs": 40,
     "lstm_tuning_patience": 5,
     "lstm_min_final_epochs": 20,
-    "lstm_ew_models_subdir": "lstm/ew/models",
-    "lstm_ew_model_filename_template": "{safe_gp_name}_lstm_model_ew.keras",
-    "lstm_ew_model_metadata_filename_template": "{safe_gp_name}_lstm_model_ew_metadata.json",
+    "lstm_models_subdir": "lstm/models",
+    "lstm_model_filename_template": "{safe_gp_name}_lstm_model.keras",
+    "lstm_model_metadata_filename_template": "{safe_gp_name}_lstm_model_metadata.json",
     "use_saved_lstm_params": False,
-    "lstm_ew_params_subdir": "lstm/ew/params",
-    "lstm_ew_params_filename_template": "{safe_gp_name}_lstm_params_ew.json",
-    "lstm_ew_trials_filename_template": "{safe_gp_name}_lstm_optuna_trials_ew.csv",
+    "lstm_params_subdir": "lstm/params",
+    "lstm_params_filename_template": "{safe_gp_name}_lstm_params.json",
+    "lstm_trials_filename_template": "{safe_gp_name}_lstm_optuna_trials.csv",
 }
 
 
-def lstm_ew_config(config: dict) -> dict:
-    return {**DEFAULT_LSTM_EW_CONFIG, **{k: v for k, v in config.items() if k.startswith("lstm_")}}
+def lstm_config(config: dict) -> dict:
+    return {**DEFAULT_LSTM_CONFIG, **{k: v for k, v in config.items() if k.startswith("lstm_")}}
 
 
-def build_lstm_ew_model_paths(repo_root: Path, config: dict, lstm_cfg: dict) -> tuple[Path, Path]:
+def build_lstm_model_paths(repo_root: Path, config: dict, lstm_cfg: dict) -> tuple[Path, Path]:
     target_gp_name = str(config["target_gp_name"])
     safe_name = safe_gp_name(target_gp_name)
-    model_filename = str(lstm_cfg["lstm_ew_model_filename_template"]).format(
+    model_filename = str(lstm_cfg["lstm_model_filename_template"]).format(
         target_gp_name=target_gp_name, safe_gp_name=safe_name
     )
-    metadata_filename = str(lstm_cfg["lstm_ew_model_metadata_filename_template"]).format(
+    metadata_filename = str(lstm_cfg["lstm_model_metadata_filename_template"]).format(
         target_gp_name=target_gp_name, safe_gp_name=safe_name
     )
-    model_dir = resolve_repo_path(repo_root, str(config["results_dir"])) / str(lstm_cfg["lstm_ew_models_subdir"])
+    model_dir = resolve_repo_path(repo_root, str(config["results_dir"])) / str(lstm_cfg["lstm_models_subdir"])
     return model_dir / model_filename, model_dir / metadata_filename
 
 
-def build_lstm_ew_params_paths(repo_root: Path, config: dict, lstm_cfg: dict) -> tuple[Path, Path]:
+def build_lstm_params_paths(repo_root: Path, config: dict, lstm_cfg: dict) -> tuple[Path, Path]:
     target_gp_name = str(config["target_gp_name"])
     safe_name = safe_gp_name(target_gp_name)
-    params_filename = str(lstm_cfg["lstm_ew_params_filename_template"]).format(
+    params_filename = str(lstm_cfg["lstm_params_filename_template"]).format(
         target_gp_name=target_gp_name, safe_gp_name=safe_name
     )
-    trials_filename = str(lstm_cfg["lstm_ew_trials_filename_template"]).format(
+    trials_filename = str(lstm_cfg["lstm_trials_filename_template"]).format(
         target_gp_name=target_gp_name, safe_gp_name=safe_name
     )
-    params_dir = resolve_repo_path(repo_root, str(config["results_dir"])) / str(lstm_cfg["lstm_ew_params_subdir"])
+    params_dir = resolve_repo_path(repo_root, str(config["results_dir"])) / str(lstm_cfg["lstm_params_subdir"])
     return params_dir / params_filename, params_dir / trials_filename
 
 
@@ -187,12 +192,12 @@ def suggest_lstm_config(trial, base_cfg: dict) -> dict:
     tuned = dict(base_cfg)
     tuned.update(
         {
-            "lstm_units": trial.suggest_categorical("lstm_units", [64, 128, 256]),
-            "lstm_dense_units": trial.suggest_categorical("lstm_dense_units", [32, 64, 128]),
-            "lstm_dropout": trial.suggest_float("lstm_dropout", 0.0, 0.15),
-            "lstm_recurrent_dropout": trial.suggest_float("lstm_recurrent_dropout", 0.0, 0.20),
+            "lstm_units": trial.suggest_categorical("lstm_units", [32, 64, 128, 256]),
+            "lstm_dense_units": trial.suggest_categorical("lstm_dense_units", [16, 32, 64, 128]),
+            "lstm_dropout": trial.suggest_float("lstm_dropout", 0.0, 0.40),
+            "lstm_recurrent_dropout": trial.suggest_float("lstm_recurrent_dropout", 0.0, 0.30),
             "lstm_learning_rate": trial.suggest_float("lstm_learning_rate", 5e-5, 2e-3, log=True),
-            "lstm_batch_size": 16,
+            "lstm_batch_size": trial.suggest_categorical("lstm_batch_size", [16, 32, 64]),
             "lstm_epochs": int(base_cfg["lstm_tuning_epochs"]),
             "lstm_patience": int(base_cfg["lstm_tuning_patience"]),
         }
@@ -365,20 +370,21 @@ def tune_lstm_hyperparams(
     n_trials = int(base_cfg["lstm_optuna_trials"])
 
     if bool(base_cfg.get("use_saved_lstm_params", False)) and params_path is not None and params_path.exists():
-        print(f"Found saved LSTM EW parameters: {params_path}")
+        print(f"Found saved LSTM parameters: {params_path}")
         with params_path.open("r", encoding="utf-8") as f:
             loaded = json.load(f)
         if (
             loaded.get("search_space_version") == LSTM_SEARCH_SPACE_VERSION
+            and loaded.get("tuning_strategy") == LSTM_TUNING_STRATEGY
             and int(loaded.get("n_trials", 0)) == n_trials
         ):
-            print("Using saved LSTM parameters (search space version and n_trials match).")
+            print("Using saved LSTM parameters (search space version, strategy, and n_trials match).")
             best_cfg = dict(base_cfg)
             best_cfg.update(loaded["best_params"])
             best_epoch_count = int(loaded.get("best_epoch_count", int(base_cfg["lstm_tuning_epochs"])))
             return best_cfg, best_epoch_count, loaded
         print(
-            "Saved LSTM parameters do not match current search space version or n_trials; "
+            "Saved LSTM parameters do not match current search space version, strategy, or n_trials; "
             "running Optuna again."
         )
 
@@ -393,7 +399,7 @@ def tune_lstm_hyperparams(
         f"tuning_epochs={int(base_cfg['lstm_tuning_epochs'])} | "
         f"tuning_patience={int(base_cfg['lstm_tuning_patience'])}"
     )
-    print(f"Search space version: {LSTM_SEARCH_SPACE_VERSION}")
+    print(f"Search space version: {LSTM_SEARCH_SPACE_VERSION} | Tuning strategy: {LSTM_TUNING_STRATEGY}")
     print("Objective: validation RMSE on the single sequential val split.")
 
     sampler = optuna.samplers.TPESampler(seed=seed)
@@ -446,6 +452,7 @@ def tune_lstm_hyperparams(
         "best_epoch_count": best_epoch_count,
         "n_trials": n_trials,
         "search_space_version": LSTM_SEARCH_SPACE_VERSION,
+        "tuning_strategy": LSTM_TUNING_STRATEGY,
         "validation_strategy": "single_sequential_val_split",
     }
 
@@ -453,7 +460,7 @@ def tune_lstm_hyperparams(
         params_path.parent.mkdir(parents=True, exist_ok=True)
         with params_path.open("w", encoding="utf-8") as f:
             json.dump(optuna_summary, f, indent=2)
-        print(f"Saved LSTM EW parameters to: {params_path}")
+        print(f"Saved LSTM parameters to: {params_path}")
     if trials_path is not None and trial_rows:
         trials_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(trial_rows).to_csv(trials_path, index=False)
@@ -465,7 +472,7 @@ def tune_lstm_hyperparams(
 def main():
     target_gp_name, config, repo_root, laps_cleaned = load_cleaned_data(Path(__file__))
     df_base = laps_cleaned.copy()
-    lstm_cfg = lstm_ew_config(config)
+    lstm_cfg = lstm_config(config)
 
     target_col = str(config["target_col"])
     lap_col = str(config["lap_col"])
@@ -478,7 +485,7 @@ def main():
     print(f"Grand Prix: {target_gp_name}")
     print(f"Numerical features: {num_cols}")
     print(f"Categorical features: {cat_cols}")
-    print(f"LSTM sequence groups: {group_cols if group_cols else 'none'}")
+    print(f"LSTM sequence groups: {group_cols if group_cols else 'none (flat sequences)'}")
 
     (
         lap_series, lap_min, lap_max,
@@ -504,21 +511,23 @@ def main():
     unique_laps = np.sort(pd.to_numeric(lap_model_sorted, errors="coerce").dropna().unique())
     n_model_laps = len(unique_laps)
 
-    # sequence_length = window_ratio × n_race_laps.
-    # Use unique raw LapNumber values (not composite Year*10000+Lap keys) so the
-    # lookback window is expressed in race laps, matching the XGBoost window ratio intent.
-    ew_window_ratio = float(config.get("lstm_ew_window_ratio", config["window_ratio"]))
+    # lstm_window_ratio controls the sequence lookback length.
+    # Falls back to lstm_ew_window_ratio (legacy key) then window_ratio.
+    lstm_window_ratio = float(
+        config.get("lstm_window_ratio",
+        config.get("lstm_ew_window_ratio",
+        config["window_ratio"]))
+    )
     if "Year" in df_base.columns:
         n_race_laps = len(
             pd.to_numeric(df_base.loc[model_order_idx, lap_col], errors="coerce").dropna().unique()
         )
     else:
         n_race_laps = n_model_laps
-    sequence_length = max(1, int(np.ceil(n_race_laps * ew_window_ratio)))
+    sequence_length = max(1, int(np.ceil(n_race_laps * lstm_window_ratio)))
     lstm_cfg["lstm_sequence_length"] = sequence_length
-    lstm_cfg["lstm_sequence_length_source"] = "lstm_ew_window_ratio_times_modeling_laps"
+    lstm_cfg["lstm_sequence_length_source"] = "lstm_window_ratio_times_race_laps"
 
-    # Single sequential train/val split within modeling block
     n_train_laps = max(sequence_length + 1, int(np.floor(n_model_laps * float(config["window_train_ratio"]))))
     train_laps = unique_laps[:n_train_laps]
     val_laps = unique_laps[n_train_laps:]
@@ -533,10 +542,10 @@ def main():
         f"Train split: laps {int(train_laps[0])}-{int(train_laps[-1])} ({len(train_laps)} laps) | "
         f"Val split: laps {int(val_laps[0])}-{int(val_laps[-1])} ({len(val_laps)} laps)"
     )
-    print(f"Sequence length (LSTM steps): {sequence_length} | window_ratio={ew_window_ratio}")
+    print(f"Sequence length (LSTM steps): {sequence_length} | lstm_window_ratio={lstm_window_ratio}")
 
     seed = int(config["random_seed"])
-    lstm_params_path, lstm_trials_path = build_lstm_ew_params_paths(repo_root, config, lstm_cfg)
+    lstm_params_path, lstm_trials_path = build_lstm_params_paths(repo_root, config, lstm_cfg)
 
     if bool(lstm_cfg["lstm_tuning_enabled"]):
         lstm_cfg, optuna_best_epoch, optuna_summary = tune_lstm_hyperparams(
@@ -555,11 +564,11 @@ def main():
         f"\nSelected LSTM config: "
         f"sequence_length={lstm_cfg['lstm_sequence_length']} | units={lstm_cfg['lstm_units']} | "
         f"dense_units={lstm_cfg['lstm_dense_units']} | dropout={lstm_cfg['lstm_dropout']:.3f} | "
+        f"recurrent_dropout={lstm_cfg['lstm_recurrent_dropout']:.3f} | "
         f"lr={lstm_cfg['lstm_learning_rate']:.5f} | batch={lstm_cfg['lstm_batch_size']} | "
         f"final_epochs={final_epoch_count}"
     )
 
-    # Evaluate on val split with selected config (for metrics and COS baseline)
     print("\n--- Validation split evaluation ---")
     context_mask, train_mask, val_mask, train_idx, val_idx = build_split_indices(
         X_model_raw, lap_model_sorted, train_laps, val_laps
@@ -579,7 +588,6 @@ def main():
         f"RMSE={val_metrics['rmse']:.4f} | MAE={val_metrics['mae']:.4f} | R2={val_metrics['r2']:.4f}"
     )
 
-    # Final model: full modeling block → holdout
     print("\n--- Training final LSTM model ---")
     (
         preds_holdout, y_holdout_seq, holdout_seq_laps,
@@ -590,14 +598,13 @@ def main():
         cat_cols, lstm_cfg, seed=seed, final_epoch_count=final_epoch_count,
     )
 
-    lstm_model_path, lstm_model_metadata_path = build_lstm_ew_model_paths(repo_root, config, lstm_cfg)
+    lstm_model_path, lstm_model_metadata_path = build_lstm_model_paths(repo_root, config, lstm_cfg)
     lstm_model_path.parent.mkdir(parents=True, exist_ok=True)
     final_model.save(lstm_model_path)
 
     holdout_ci = calc_holdout_ci(y_holdout_seq, preds_holdout, seed=seed)
     holdout_metrics = metric_values(y_holdout_seq, preds_holdout)
 
-    # COS: val split as baseline, holdout as final
     results_for_cos = {
         "window": [1],
         "rmse": [val_metrics["rmse"]],
@@ -617,6 +624,8 @@ def main():
         "target_gp_name": target_gp_name,
         "model": "lstm",
         "validation_protocol": "single_sequential_split",
+        "tuning_strategy": LSTM_TUNING_STRATEGY,
+        "search_space_version": LSTM_SEARCH_SPACE_VERSION,
         "model_path": str(lstm_model_path),
         "target_col": target_col,
         "lap_col": lap_col,
@@ -625,8 +634,8 @@ def main():
         "encoded_feature_names": list(feature_names),
         "sequence_length": int(lstm_cfg["lstm_sequence_length"]),
         "sequence_length_source": lstm_cfg["lstm_sequence_length_source"],
-        "sequence_window_ratio": ew_window_ratio,
-        "sequence_window_train_ratio": float(config["window_train_ratio"]),
+        "lstm_window_ratio": lstm_window_ratio,
+        "window_train_ratio": float(config["window_train_ratio"]),
         "modeling_lap_count": int(n_model_laps),
         "train_laps": len(train_laps),
         "val_laps": len(val_laps),
@@ -686,10 +695,12 @@ def main():
         extra_params={
             "preprocessing": "median_imputer_minmax_scaler_one_hot_full_rank",
             "validation_protocol": "single_sequential_split",
+            "tuning_strategy": LSTM_TUNING_STRATEGY,
+            "search_space_version": LSTM_SEARCH_SPACE_VERSION,
             "sequence_length": int(lstm_cfg["lstm_sequence_length"]),
             "sequence_length_source": lstm_cfg["lstm_sequence_length_source"],
-            "sequence_window_ratio": ew_window_ratio,
-            "sequence_window_train_ratio": float(config["window_train_ratio"]),
+            "lstm_window_ratio": lstm_window_ratio,
+            "window_train_ratio": float(config["window_train_ratio"]),
             "sequence_groups": ", ".join(group_cols),
             "lstm_tuning_enabled": bool(lstm_cfg["lstm_tuning_enabled"]),
             "lstm_optuna_trials": int(lstm_cfg["lstm_optuna_trials"]),
@@ -708,7 +719,7 @@ def main():
             lstm_model_metadata_path,
             *(p for p in [lstm_params_path, lstm_trials_path] if p.exists()),
         ],
-        validation_mode="ew",
+        validation_mode="single_split",
     )
 
     print("\n--- Validation split ---")
