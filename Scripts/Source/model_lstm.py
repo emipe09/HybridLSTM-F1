@@ -50,7 +50,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover
     ) from exc
 
 
-LSTM_SEARCH_SPACE_VERSION = "v5"
+LSTM_SEARCH_SPACE_VERSION = "v6"
 LSTM_TUNING_STRATEGY = "single_sequential_split_v1"
 
 DEFAULT_LSTM_CONFIG = {
@@ -221,17 +221,16 @@ def make_lstm_model(sequence_length: int, n_features: int, lstm_cfg: dict):
 
 
 def suggest_lstm_config(trial, base_cfg: dict) -> dict:
-    # Search space v5 (v4→v5), narrowed from 60 empirical trials:
-    # - lstm_units: [64, 128] — 32 and 256 never appeared in top trials
-    # - lstm_dense_units: [64, 128] — 32 never competitive
-    # - lstm_dropout: 0.05–0.50 — both low (~0.09) and high (~0.43) appeared in top-5;
-    #   keeping full range but floor raised from 0 to 0.05
-    # - lstm_recurrent_dropout: 0.20–0.45 — all top-5 trials had ≥0.28; floor raised
-    # - lstm_learning_rate: 1e-4–5e-3 — higher LR worked well with strong dropout
-    # - lstm_batch_size: [32, 64] — 16 was slow and inconsistent; removed
-    # - lstm_l2_reg: 0.0001–0.003 — very high L2 (>0.004) consistently hurt; capped
-    # - lstm_stacked: fixed to False — single LSTM always outperformed stacked
-    # - lstm_sequence_length: [3, 5, 7] — 3 dominated, 10 and 14 rarely competitive
+    # Search space v6 (v5→v6):
+    # - lstm_learning_rate: floor raised 1e-4→3e-4. v5 best trial landed at lr=1.49e-4
+    #   with dropout=0.50 — a region that scored well in the Optuna seed (76) but produced
+    #   RMSE=3.21 with the evaluation seed (42). High dropout requires high lr to converge
+    #   within the epoch budget; v4 best trials (dropout~0.43) used lr~0.0026–0.0028.
+    #   3e-4 excludes the low-lr + high-dropout instability zone.
+    # - lstm_sequence_length: fixed to 3. Across v4 (60 trials) and v5 (60 trials), seq=3
+    #   appeared in 4 of the top-5 trials in v4 and was competitive in v5. Fixing it
+    #   eliminates one categorical dimension, focusing the budget on continuous params.
+    # All other bounds unchanged from v5.
     tuned = dict(base_cfg)
     tuned.update(
         {
@@ -239,11 +238,11 @@ def suggest_lstm_config(trial, base_cfg: dict) -> dict:
             "lstm_dense_units": trial.suggest_categorical("lstm_dense_units", [64, 128]),
             "lstm_dropout": trial.suggest_float("lstm_dropout", 0.05, 0.50),
             "lstm_recurrent_dropout": trial.suggest_float("lstm_recurrent_dropout", 0.20, 0.45),
-            "lstm_learning_rate": trial.suggest_float("lstm_learning_rate", 1e-4, 5e-3, log=True),
+            "lstm_learning_rate": trial.suggest_float("lstm_learning_rate", 3e-4, 5e-3, log=True),
             "lstm_batch_size": trial.suggest_categorical("lstm_batch_size", [32, 64]),
             "lstm_l2_reg": trial.suggest_float("lstm_l2_reg", 1e-4, 3e-3),
             "lstm_stacked": False,
-            "lstm_sequence_length": trial.suggest_categorical("lstm_sequence_length", [3, 5, 7]),
+            "lstm_sequence_length": 3,
             "lstm_epochs": int(base_cfg["lstm_tuning_epochs"]),
             "lstm_patience": int(base_cfg["lstm_tuning_patience"]),
         }
@@ -474,7 +473,7 @@ def tune_lstm_hyperparams(
                 group_model.loc[context_mask],
                 train_idx, val_idx,
                 cat_cols, trial_cfg,
-                seed=seed + trial.number,
+                seed=seed,
             )
         except ValueError:
             tf.keras.backend.clear_session()
