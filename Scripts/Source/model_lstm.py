@@ -50,7 +50,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover
     ) from exc
 
 
-LSTM_SEARCH_SPACE_VERSION = "v3"
+LSTM_SEARCH_SPACE_VERSION = "v4"
 LSTM_TUNING_STRATEGY = "single_sequential_split_v1"
 
 DEFAULT_LSTM_CONFIG = {
@@ -70,7 +70,10 @@ DEFAULT_LSTM_CONFIG = {
     "lstm_optuna_trials": 20,
     "lstm_tuning_epochs": 40,
     "lstm_tuning_patience": 5,
-    "lstm_min_final_epochs": 20,
+    "lstm_min_final_epochs": 50,
+    "lstm_l2_reg": 0.0,
+    "lstm_stacked": False,
+    "lstm_year_weight_scale": 1.0,
     "lstm_models_subdir": "lstm/models",
     "lstm_model_filename_template": "{safe_gp_name}_lstm_model.keras",
     "lstm_model_metadata_filename_template": "{safe_gp_name}_lstm_model_metadata.json",
@@ -171,41 +174,135 @@ def build_sequences(
     return np.stack(sequence_frames), np.asarray(targets, dtype=float), np.asarray(target_laps, dtype=float)
 
 
+def build_sequences_with_groups(
+    X_scaled: pd.DataFrame,
+    y: pd.Series,
+    laps: pd.Series,
+    groups: pd.DataFrame,
+    target_indices: pd.Index,
+    sequence_length: int,
+):
+    """Like build_sequences but also returns the group key for each sequence target."""
+    group_names = [f"__group_{i}__" for i in range(len(groups.columns))]
+    sequence_groups = groups.reset_index(drop=True).copy()
+    sequence_groups.columns = group_names
+    context = pd.concat([X_scaled, y.rename("__target__"), laps.rename("__lap__"), sequence_groups], axis=1)
+    target_index_set = set(target_indices)
+    sequence_frames, targets, target_laps, group_keys = [], [], [], []
+
+    grouped = context.groupby(group_names, sort=False, dropna=False) if group_names else [(None, context)]
+    for group_key, group in grouped:
+        group = group.sort_values("__lap__", kind="mergesort")
+        ordered_indices = list(group.index)
+        for position, row_index in enumerate(ordered_indices):
+            if row_index not in target_index_set or position < sequence_length:
+                continue
+            previous_indices = ordered_indices[position - sequence_length : position]
+            sequence_frames.append(X_scaled.loc[previous_indices].to_numpy(dtype=np.float32))
+            targets.append(float(y.loc[row_index]))
+            target_laps.append(float(laps.loc[row_index]))
+            group_keys.append(group_key if isinstance(group_key, tuple) else (group_key,))
+
+    if not sequence_frames:
+        n_features = X_scaled.shape[1]
+        return (
+            np.empty((0, sequence_length, n_features), dtype=np.float32),
+            np.empty((0,), dtype=float),
+            np.empty((0,), dtype=float),
+            [],
+        )
+    return np.stack(sequence_frames), np.asarray(targets, dtype=float), np.asarray(target_laps, dtype=float), group_keys
+
+
+def compute_year_sample_weights(group_keys: list, year_weight_scale: float = 1.0) -> np.ndarray | None:
+    """Assign higher training weight to more recent years.
+
+    With year_weight_scale=1.0 the oldest year gets weight 0.5 and the newest 1.5
+    (linear ramp). Intermediate years are interpolated. Returns None if all keys
+    are from the same year (no gradient to apply) or scale is 0.
+    """
+    if year_weight_scale <= 0 or not group_keys:
+        return None
+    years = np.asarray([float(k[0]) for k in group_keys], dtype=np.float32)
+    min_y, max_y = years.min(), years.max()
+    if max_y == min_y:
+        return None
+    # Normalize to [0, 1] then scale to [0.5, 1.5] * year_weight_scale
+    normalized = (years - min_y) / (max_y - min_y)
+    weights = (0.5 + normalized) * year_weight_scale
+    return weights
+
+
 def make_lstm_model(sequence_length: int, n_features: int, lstm_cfg: dict):
-    model = tf.keras.Sequential(
-        [
-            tf.keras.layers.Input(shape=(sequence_length, n_features)),
-            tf.keras.layers.LSTM(
-                int(lstm_cfg["lstm_units"]),
-                dropout=float(lstm_cfg["lstm_dropout"]),
-                recurrent_dropout=float(lstm_cfg["lstm_recurrent_dropout"]),
-            ),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Dense(int(lstm_cfg["lstm_dense_units"]), activation="relu"),
-            tf.keras.layers.Dense(1),
-        ]
+    l2_reg = float(lstm_cfg.get("lstm_l2_reg", 0.0))
+    regularizer = tf.keras.regularizers.l2(l2_reg) if l2_reg > 0 else None
+    stacked = bool(lstm_cfg.get("lstm_stacked", False))
+    units = int(lstm_cfg["lstm_units"])
+    dropout = float(lstm_cfg["lstm_dropout"])
+    recurrent_dropout = float(lstm_cfg["lstm_recurrent_dropout"])
+
+    layers = [tf.keras.layers.Input(shape=(sequence_length, n_features))]
+    layers.append(
+        tf.keras.layers.LSTM(
+            units,
+            dropout=dropout,
+            recurrent_dropout=recurrent_dropout,
+            kernel_regularizer=regularizer,
+            recurrent_regularizer=regularizer,
+            return_sequences=stacked,
+        )
     )
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=float(lstm_cfg["lstm_learning_rate"])), loss="mse")
+    if stacked:
+        layers.append(
+            tf.keras.layers.LSTM(
+                max(16, units // 2),
+                dropout=dropout,
+                recurrent_dropout=recurrent_dropout,
+                kernel_regularizer=regularizer,
+                recurrent_regularizer=regularizer,
+            )
+        )
+    layers.append(tf.keras.layers.BatchNormalization())
+    layers.append(
+        tf.keras.layers.Dense(
+            int(lstm_cfg["lstm_dense_units"]),
+            activation="relu",
+            kernel_regularizer=regularizer,
+        )
+    )
+    layers.append(tf.keras.layers.Dense(1))
+
+    model = tf.keras.Sequential(layers)
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=float(lstm_cfg["lstm_learning_rate"])),
+        loss="mse",
+    )
     return model
 
 
 def suggest_lstm_config(trial, base_cfg: dict) -> dict:
-    # Search space narrowed based on empirical trial results (v2→v3):
-    # - lstm_units: 256 removed (never competitive), 32 kept for regularization
-    # - lstm_dense_units: 16 removed (consistently poor), 128 kept for capacity
-    # - lstm_dropout: ceiling 0.40→0.20 (all top trials clustered below 0.15)
-    # - lstm_recurrent_dropout: ceiling 0.30→0.25 (marginal cut, values >0.28 never won)
-    # - lstm_learning_rate: floor 5e-5→1e-4 (sub-1e-4 rates never appeared in best trials)
-    # - lstm_batch_size: 16 removed (consistently the worst option)
+    # Search space v4 changes (v3→v4):
+    # - lstm_units: restored 256 (larger capacity may help temporal generalization)
+    # - lstm_dropout: ceiling raised 0.20→0.50 (previous best had ~0 dropout, widening to
+    #   let Optuna explore stronger regularization paths for 2022-2024→2025 shift)
+    # - lstm_recurrent_dropout: ceiling 0.25→0.40 (same rationale)
+    # - lstm_learning_rate: floor lowered 1e-4→5e-5 for slower convergence with regularization
+    # - lstm_batch_size: 16 restored (useful with year-weighted samples)
+    # - lstm_l2_reg: new — kernel/recurrent L2 penalty to reduce overfitting
+    # - lstm_stacked: new — optional second LSTM layer for deeper temporal abstraction
+    # - lstm_sequence_length: new — let Optuna choose lookback window [3, 5, 7, 10, 14]
     tuned = dict(base_cfg)
     tuned.update(
         {
-            "lstm_units": trial.suggest_categorical("lstm_units", [32, 64, 128]),
+            "lstm_units": trial.suggest_categorical("lstm_units", [32, 64, 128, 256]),
             "lstm_dense_units": trial.suggest_categorical("lstm_dense_units", [32, 64, 128]),
-            "lstm_dropout": trial.suggest_float("lstm_dropout", 0.0, 0.20),
-            "lstm_recurrent_dropout": trial.suggest_float("lstm_recurrent_dropout", 0.0, 0.25),
-            "lstm_learning_rate": trial.suggest_float("lstm_learning_rate", 1e-4, 2e-3, log=True),
-            "lstm_batch_size": trial.suggest_categorical("lstm_batch_size", [32, 64]),
+            "lstm_dropout": trial.suggest_float("lstm_dropout", 0.0, 0.50),
+            "lstm_recurrent_dropout": trial.suggest_float("lstm_recurrent_dropout", 0.0, 0.40),
+            "lstm_learning_rate": trial.suggest_float("lstm_learning_rate", 5e-5, 5e-3, log=True),
+            "lstm_batch_size": trial.suggest_categorical("lstm_batch_size", [16, 32, 64]),
+            "lstm_l2_reg": trial.suggest_float("lstm_l2_reg", 0.0, 5e-3),
+            "lstm_stacked": trial.suggest_categorical("lstm_stacked", [False, True]),
+            "lstm_sequence_length": trial.suggest_categorical("lstm_sequence_length", [3, 5, 7, 10, 14]),
             "lstm_epochs": int(base_cfg["lstm_tuning_epochs"]),
             "lstm_patience": int(base_cfg["lstm_tuning_patience"]),
         }
@@ -253,10 +350,10 @@ def fit_predict_lstm(
     lap_ctx = lap_context.reset_index(drop=True)
     group_ctx = group_context.reset_index(drop=True)
 
-    X_train_seq, y_train_raw, _ = build_sequences(
+    X_train_seq, y_train_raw, _, train_group_keys = build_sequences_with_groups(
         X_context_scaled, y_ctx, lap_ctx, group_ctx, train_target_indices, sequence_length
     )
-    X_eval_seq, y_eval_seq, eval_laps = build_sequences(
+    X_eval_seq, y_eval_seq, eval_laps, _ = build_sequences_with_groups(
         X_context_scaled, y_ctx, lap_ctx, group_ctx, eval_target_indices, sequence_length
     )
 
@@ -267,14 +364,19 @@ def fit_predict_lstm(
     y_train_scaled = target_scaler.fit_transform(y_train_raw.reshape(-1, 1)).ravel()
     y_eval_scaled = target_scaler.transform(y_eval_seq.reshape(-1, 1)).ravel()
 
+    year_weight_scale = float(lstm_cfg.get("lstm_year_weight_scale", 1.0))
+    sample_weight = compute_year_sample_weights(train_group_keys, year_weight_scale)
+
     model = make_lstm_model(sequence_length, X_train_seq.shape[2], lstm_cfg)
-    fit_kwargs = {
+    fit_kwargs: dict = {
         "epochs": int(epochs or lstm_cfg["lstm_epochs"]),
         "batch_size": int(lstm_cfg["lstm_batch_size"]),
         "shuffle": False,
         "verbose": 0,
         "validation_data": (X_eval_seq, y_eval_scaled),
     }
+    if sample_weight is not None:
+        fit_kwargs["sample_weight"] = sample_weight
     if callbacks_enabled:
         fit_kwargs["callbacks"] = training_callbacks(lstm_cfg)
     history = model.fit(X_train_seq, y_train_scaled, **fit_kwargs)
@@ -315,10 +417,10 @@ def fit_final_lstm(
     X_context_scaled, imputer, feature_scaler, feature_names = fit_feature_transformers(
         X_model.reset_index(drop=True), X_context, cat_cols
     )
-    X_model_seq, y_model_raw, _ = build_sequences(
+    X_model_seq, y_model_raw, _, model_group_keys = build_sequences_with_groups(
         X_context_scaled, y_context, lap_context, group_context, model_index, sequence_length
     )
-    X_holdout_seq, y_holdout_seq, holdout_laps = build_sequences(
+    X_holdout_seq, y_holdout_seq, holdout_laps, _ = build_sequences_with_groups(
         X_context_scaled, y_context, lap_context, group_context, holdout_index, sequence_length
     )
 
@@ -329,13 +431,29 @@ def fit_final_lstm(
     target_scaler = MinMaxScaler()
     y_model_scaled = target_scaler.fit_transform(y_model_raw.reshape(-1, 1)).ravel()
 
+    year_weight_scale = float(lstm_cfg.get("lstm_year_weight_scale", 1.0))
+    sample_weight = compute_year_sample_weights(model_group_keys, year_weight_scale)
+
     model = make_lstm_model(sequence_length, X_model_seq.shape[2], lstm_cfg)
-    model.fit(
-        X_model_seq, y_model_scaled,
-        epochs=final_epoch_count,
-        batch_size=int(lstm_cfg["lstm_batch_size"]),
-        shuffle=False, callbacks=[], verbose=0,
-    )
+    # ReduceLROnPlateau on training loss: no val data withheld, but lr still adapts.
+    final_callbacks = [
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="loss",
+            factor=float(lstm_cfg["lstm_reduce_lr_factor"]),
+            patience=int(lstm_cfg["lstm_reduce_lr_patience"]),
+            min_lr=float(lstm_cfg["lstm_min_learning_rate"]),
+        )
+    ]
+    fit_kwargs: dict = {
+        "epochs": final_epoch_count,
+        "batch_size": int(lstm_cfg["lstm_batch_size"]),
+        "shuffle": False,
+        "callbacks": final_callbacks,
+        "verbose": 0,
+    }
+    if sample_weight is not None:
+        fit_kwargs["sample_weight"] = sample_weight
+    model.fit(X_model_seq, y_model_scaled, **fit_kwargs)
     preds_scaled = model.predict(X_holdout_seq, verbose=0).ravel()
     preds = target_scaler.inverse_transform(preds_scaled.reshape(-1, 1)).ravel()
     return preds, y_holdout_seq, holdout_laps, model, imputer, feature_scaler, target_scaler, feature_names, final_epoch_count
@@ -562,6 +680,18 @@ def main():
             params_path=lstm_params_path,
             trials_path=lstm_trials_path,
         )
+        lstm_cfg["lstm_sequence_length_source"] = "optuna_tuned"
+        # Ensure n_train_laps respects the tuned sequence_length
+        tuned_seq_len = int(lstm_cfg["lstm_sequence_length"])
+        if len(train_laps) <= tuned_seq_len:
+            n_train_laps = max(tuned_seq_len + 1, int(np.floor(n_model_laps * float(config["window_train_ratio"]))))
+            train_laps = unique_laps[:n_train_laps]
+            val_laps = unique_laps[n_train_laps:]
+            if len(val_laps) == 0:
+                raise ValueError(
+                    f"Validation split empty after sequence_length={tuned_seq_len} adjustment. "
+                    "Reduce window_train_ratio or add more data."
+                )
     else:
         optuna_best_epoch = int(lstm_cfg["lstm_epochs"])
         optuna_summary = None
@@ -574,6 +704,7 @@ def main():
         f"dense_units={lstm_cfg['lstm_dense_units']} | dropout={lstm_cfg['lstm_dropout']:.3f} | "
         f"recurrent_dropout={lstm_cfg['lstm_recurrent_dropout']:.3f} | "
         f"lr={lstm_cfg['lstm_learning_rate']:.5f} | batch={lstm_cfg['lstm_batch_size']} | "
+        f"l2={lstm_cfg.get('lstm_l2_reg', 0.0):.5f} | stacked={lstm_cfg.get('lstm_stacked', False)} | "
         f"final_epochs={final_epoch_count}"
     )
 
@@ -720,6 +851,9 @@ def main():
             "lstm_batch_size": int(lstm_cfg["lstm_batch_size"]),
             "lstm_epochs": int(lstm_cfg["lstm_epochs"]),
             "lstm_patience": int(lstm_cfg["lstm_patience"]),
+            "lstm_l2_reg": float(lstm_cfg.get("lstm_l2_reg", 0.0)),
+            "lstm_stacked": bool(lstm_cfg.get("lstm_stacked", False)),
+            "lstm_year_weight_scale": float(lstm_cfg.get("lstm_year_weight_scale", 1.0)),
             "lstm_final_epoch_count": int(final_epoch_count),
         },
         artifacts=[
