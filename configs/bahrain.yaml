@@ -41,7 +41,7 @@ lstm_optuna_trials: 40
 lstm_tuning_epochs: 60
 lstm_tuning_patience: 8
 lstm_min_final_epochs: 20
-lstm_group_cols: [Year]
+lstm_group_cols: [Year, LapNumber]
 optuna_trials: 100
 use_saved_xgb_params: true
 use_saved_lstm_params: false
