@@ -50,7 +50,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover
     ) from exc
 
 
-LSTM_SEARCH_SPACE_VERSION = "v6"
+LSTM_SEARCH_SPACE_VERSION = "v8"
 LSTM_TUNING_STRATEGY = "single_sequential_split_v1"
 
 DEFAULT_LSTM_CONFIG = {
@@ -62,15 +62,12 @@ DEFAULT_LSTM_CONFIG = {
     "lstm_batch_size": 32,
     "lstm_epochs": 100,
     "lstm_patience": 10,
-    "lstm_reduce_lr_factor": 0.5,
-    "lstm_reduce_lr_patience": 4,
-    "lstm_min_learning_rate": 0.00001,
-    "lstm_group_cols": ["Year"],
+    "lstm_group_cols": ["Year", "Driver"],
     "lstm_tuning_enabled": True,
     "lstm_optuna_trials": 20,
     "lstm_tuning_epochs": 40,
     "lstm_tuning_patience": 5,
-    "lstm_min_final_epochs": 50,
+    "lstm_min_final_epochs": 10,
     "lstm_l2_reg": 0.0,
     "lstm_stacked": False,
     "lstm_models_subdir": "lstm/models",
@@ -221,16 +218,10 @@ def make_lstm_model(sequence_length: int, n_features: int, lstm_cfg: dict):
 
 
 def suggest_lstm_config(trial, base_cfg: dict) -> dict:
-    # Search space v6 (v5→v6):
-    # - lstm_learning_rate: floor raised 1e-4→3e-4. v5 best trial landed at lr=1.49e-4
-    #   with dropout=0.50 — a region that scored well in the Optuna seed (76) but produced
-    #   RMSE=3.21 with the evaluation seed (42). High dropout requires high lr to converge
-    #   within the epoch budget; v4 best trials (dropout~0.43) used lr~0.0026–0.0028.
-    #   3e-4 excludes the low-lr + high-dropout instability zone.
-    # - lstm_sequence_length: fixed to 3. Across v4 (60 trials) and v5 (60 trials), seq=3
-    #   appeared in 4 of the top-5 trials in v4 and was competitive in v5. Fixing it
-    #   eliminates one categorical dimension, focusing the budget on continuous params.
-    # All other bounds unchanged from v5.
+    # Search space v8 (v7→v8):
+    # - lstm_sequence_length: removido do espaço de busca; fixado pelo usuário via
+    #   lstm_window_ratio no YAML (sequence_length = ceil(n_race_laps * lstm_window_ratio)).
+    # - Todos os outros bounds inalterados de v7.
     tuned = dict(base_cfg)
     tuned.update(
         {
@@ -242,7 +233,6 @@ def suggest_lstm_config(trial, base_cfg: dict) -> dict:
             "lstm_batch_size": trial.suggest_categorical("lstm_batch_size", [32, 64]),
             "lstm_l2_reg": trial.suggest_float("lstm_l2_reg", 1e-4, 3e-3),
             "lstm_stacked": False,
-            "lstm_sequence_length": 3,
             "lstm_epochs": int(base_cfg["lstm_tuning_epochs"]),
             "lstm_patience": int(base_cfg["lstm_tuning_patience"]),
         }
@@ -254,12 +244,6 @@ def training_callbacks(lstm_cfg: dict):
     return [
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss", patience=int(lstm_cfg["lstm_patience"]), restore_best_weights=True
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss",
-            factor=float(lstm_cfg["lstm_reduce_lr_factor"]),
-            patience=int(lstm_cfg["lstm_reduce_lr_patience"]),
-            min_lr=float(lstm_cfg["lstm_min_learning_rate"]),
         ),
     ]
 
@@ -342,46 +326,48 @@ def fit_final_lstm(
     set_random_seed(seed)
     sequence_length = int(lstm_cfg["lstm_sequence_length"])
 
-    X_context = pd.concat([X_model, X_holdout], axis=0).reset_index(drop=True)
-    y_context = pd.concat([y_model, y_holdout], axis=0).reset_index(drop=True)
-    lap_context = pd.concat([lap_model, lap_holdout], axis=0).reset_index(drop=True)
-    group_context = pd.concat([group_model, group_holdout], axis=0).reset_index(drop=True)
-    model_index = pd.RangeIndex(0, len(X_model))
-    holdout_index = pd.RangeIndex(len(X_model), len(X_context))
+    X_model_r = X_model.reset_index(drop=True)
+    y_model_r = y_model.reset_index(drop=True)
+    lap_model_r = lap_model.reset_index(drop=True)
+    group_model_r = group_model.reset_index(drop=True)
 
-    X_context_scaled, imputer, feature_scaler, feature_names = fit_feature_transformers(
-        X_model.reset_index(drop=True), X_context, cat_cols
+    X_holdout_r = X_holdout.reset_index(drop=True)
+    y_holdout_r = y_holdout.reset_index(drop=True)
+    lap_holdout_r = lap_holdout.reset_index(drop=True)
+    group_holdout_r = group_holdout.reset_index(drop=True)
+
+    X_model_scaled, imputer, feature_scaler, feature_names = fit_feature_transformers(
+        X_model_r, X_model_r, cat_cols
     )
+    X_holdout_scaled, _, _, _ = fit_feature_transformers(
+        X_model_r, X_holdout_r, cat_cols
+    )
+
+    model_index = pd.RangeIndex(0, len(X_model_r))
+    holdout_index = pd.RangeIndex(0, len(X_holdout_r))
+
     X_model_seq, y_model_raw, _ = build_sequences(
-        X_context_scaled, y_context, lap_context, group_context, model_index, sequence_length
+        X_model_scaled, y_model_r, lap_model_r, group_model_r, model_index, sequence_length
     )
     X_holdout_seq, y_holdout_seq, holdout_laps = build_sequences(
-        X_context_scaled, y_context, lap_context, group_context, holdout_index, sequence_length
+        X_holdout_scaled, y_holdout_r, lap_holdout_r, group_holdout_r, holdout_index, sequence_length
     )
 
     if len(X_model_seq) == 0 or len(X_holdout_seq) == 0:
         raise ValueError("Unable to build final LSTM sequences. Check sequence_length vs. lap continuity.")
 
-    final_epoch_count = max(int(final_epoch_count), int(lstm_cfg["lstm_min_final_epochs"]))
     target_scaler = MinMaxScaler()
     y_model_scaled = target_scaler.fit_transform(y_model_raw.reshape(-1, 1)).ravel()
 
+    final_epoch_count = max(int(final_epoch_count), int(lstm_cfg["lstm_min_final_epochs"]))
+    print(f"  Final epoch count (median of Optuna trials): {final_epoch_count}")
+
     model = make_lstm_model(sequence_length, X_model_seq.shape[2], lstm_cfg)
-    # ReduceLROnPlateau on training loss: no val data withheld, but lr still adapts.
-    final_callbacks = [
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="loss",
-            factor=float(lstm_cfg["lstm_reduce_lr_factor"]),
-            patience=int(lstm_cfg["lstm_reduce_lr_patience"]),
-            min_lr=float(lstm_cfg["lstm_min_learning_rate"]),
-        )
-    ]
     model.fit(
         X_model_seq, y_model_scaled,
         epochs=final_epoch_count,
         batch_size=int(lstm_cfg["lstm_batch_size"]),
         shuffle=False,
-        callbacks=final_callbacks,
         verbose=0,
     )
     preds_scaled = model.predict(X_holdout_seq, verbose=0).ravel()
@@ -498,14 +484,22 @@ def tune_lstm_hyperparams(
 
     best_cfg = dict(base_cfg)
     best_cfg.update(study.best_params)
-    best_epoch_count = int(study.best_trial.user_attrs.get("best_epoch_count", int(base_cfg["lstm_tuning_epochs"])))
+    completed_epoch_counts = [
+        int(t.user_attrs["best_epoch_count"])
+        for t in study.trials
+        if t.state.name == "COMPLETE" and "best_epoch_count" in t.user_attrs
+    ]
+    median_epoch_count = int(np.median(completed_epoch_counts)) if completed_epoch_counts else int(base_cfg["lstm_tuning_epochs"])
     print(f"Best LSTM Optuna RMSE: {study.best_value:.4f}")
     print(f"Best LSTM params: {study.best_params}")
+    print(f"Median epoch count across {len(completed_epoch_counts)} completed trials: {median_epoch_count}")
 
     optuna_summary = {
         "best_value": float(study.best_value),
         "best_params": study.best_params,
-        "best_epoch_count": best_epoch_count,
+        "best_epoch_count": median_epoch_count,
+        "best_epoch_count_source": "median_completed_trials",
+        "best_epoch_count_values": completed_epoch_counts,
         "n_trials": n_trials,
         "search_space_version": LSTM_SEARCH_SPACE_VERSION,
         "tuning_strategy": LSTM_TUNING_STRATEGY,
@@ -522,7 +516,7 @@ def tune_lstm_hyperparams(
         pd.DataFrame(trial_rows).to_csv(trials_path, index=False)
         print(f"Saved LSTM Optuna trial table to: {trials_path}")
 
-    return best_cfg, best_epoch_count, optuna_summary
+    return best_cfg, median_epoch_count, optuna_summary
 
 
 def main():
@@ -610,8 +604,8 @@ def main():
             params_path=lstm_params_path,
             trials_path=lstm_trials_path,
         )
-        lstm_cfg["lstm_sequence_length_source"] = "optuna_tuned"
-        # Ensure n_train_laps respects the tuned sequence_length
+        lstm_cfg["lstm_sequence_length_source"] = "lstm_window_ratio_times_race_laps"
+        # Ensure n_train_laps respects the fixed sequence_length
         tuned_seq_len = int(lstm_cfg["lstm_sequence_length"])
         if len(train_laps) <= tuned_seq_len:
             n_train_laps = max(tuned_seq_len + 1, int(np.floor(n_model_laps * float(config["window_train_ratio"]))))

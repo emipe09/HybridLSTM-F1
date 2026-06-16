@@ -39,11 +39,11 @@ lstm_reduce_lr_factor: 0.50
 lstm_reduce_lr_patience: 4
 lstm_min_learning_rate: 0.00001
 lstm_tuning_enabled: true
-lstm_optuna_trials: 60
+lstm_optuna_trials: 20
 lstm_tuning_epochs: 80
 lstm_tuning_patience: 10
-lstm_min_final_epochs: 50
-lstm_group_cols: [Year]
+lstm_min_final_epochs: 10
+lstm_group_cols: [Year, Driver]
 optuna_trials: 100
 use_saved_xgb_params: true
 use_saved_lstm_params: false
