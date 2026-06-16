@@ -25,7 +25,7 @@ import optuna
 import pandas as pd
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 
 from modeling_utils import (
     align_one_hot,
@@ -119,7 +119,7 @@ def set_random_seed(seed: int) -> None:
 def fit_feature_transformers(X_train: pd.DataFrame, X_context: pd.DataFrame, cat_cols: list[str]):
     X_train_enc, X_context_enc = align_one_hot(X_train, X_context, cat_cols, drop_first=False)
     imputer = SimpleImputer(strategy="median")
-    scaler = MinMaxScaler()
+    scaler = StandardScaler()
     X_train_imp = imputer.fit_transform(X_train_enc)
     X_context_imp = imputer.transform(X_context_enc)
     scaler.fit(X_train_imp)
@@ -284,7 +284,7 @@ def fit_predict_lstm(
     if len(X_train_seq) == 0 or len(X_eval_seq) == 0:
         raise ValueError("Unable to build LSTM sequences. Check sequence_length vs. lap continuity.")
 
-    target_scaler = MinMaxScaler()
+    target_scaler = StandardScaler()
     y_train_scaled = target_scaler.fit_transform(y_train_raw.reshape(-1, 1)).ravel()
     y_eval_scaled = target_scaler.transform(y_eval_seq.reshape(-1, 1)).ravel()
 
@@ -356,7 +356,7 @@ def fit_final_lstm(
     if len(X_model_seq) == 0 or len(X_holdout_seq) == 0:
         raise ValueError("Unable to build final LSTM sequences. Check sequence_length vs. lap continuity.")
 
-    target_scaler = MinMaxScaler()
+    target_scaler = StandardScaler()
     y_model_scaled = target_scaler.fit_transform(y_model_raw.reshape(-1, 1)).ravel()
 
     final_epoch_count = max(int(final_epoch_count), int(lstm_cfg["lstm_min_final_epochs"]))

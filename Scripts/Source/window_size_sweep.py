@@ -1,4 +1,4 @@
-"""Window size sensitivity sweep across SW and EW validation for LR and XGBoost.
+"""Window size sensitivity sweep across SW and EW validation for LR, XGBoost, and LSTM.
 
 For each window size in the configured range, runs Optuna hyperparameter tuning
 for XGBoost using the windows of that size and scheme (SW or EW). Each combination
@@ -6,6 +6,10 @@ of (window_size, scheme) gets its own tuned hyperparameters, saved to a JSON fil
 and used for both CV evaluation and the final holdout model.
 
 LR has no hyperparameters — a fresh OLS model is fitted per window.
+
+For LSTM, window_ratio maps to sequence_length = ceil(n_race_laps * window_ratio).
+Each ratio gets its own Optuna tuning on the single sequential val split, then the
+final model is trained on the full modeling block and evaluated on the holdout.
 """
 
 from __future__ import annotations
@@ -47,6 +51,20 @@ from xgb_utils import (
 )
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+try:
+    import tensorflow as tf
+    from model_lstm import (
+        build_split_indices,
+        fit_final_lstm,
+        fit_predict_lstm,
+        lstm_config,
+        metric_values,
+        tune_lstm_hyperparams,
+    )
+    _LSTM_AVAILABLE = True
+except (ModuleNotFoundError, ImportError):
+    _LSTM_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -253,10 +271,153 @@ def _aggregate_results(
 
 
 # ---------------------------------------------------------------------------
+# LSTM sweep helper
+# ---------------------------------------------------------------------------
+
+def _run_lstm_for_ratio(
+    window_ratio,
+    n_race_laps,
+    X_model_raw, y_model, lap_model_sorted, group_model,
+    X_holdout_raw, y_holdout, lap_holdout_sorted, group_holdout,
+    cat_cols, config, lstm_base_cfg, seed,
+    params_dir, safe_name,
+):
+    """Run LSTM tuning + final evaluation for a single window_ratio."""
+    sequence_length = max(1, int(np.ceil(n_race_laps * window_ratio)))
+    lstm_cfg = dict(lstm_base_cfg)
+    lstm_cfg["lstm_sequence_length"] = sequence_length
+    lstm_cfg["lstm_sequence_length_source"] = "lstm_window_ratio_times_race_laps"
+
+    unique_laps = np.sort(pd.to_numeric(lap_model_sorted, errors="coerce").dropna().unique())
+    n_model_laps = len(unique_laps)
+    n_train_laps = max(sequence_length + 1, int(np.floor(n_model_laps * float(config["window_train_ratio"]))))
+    train_laps = unique_laps[:n_train_laps]
+    val_laps = unique_laps[n_train_laps:]
+    if len(val_laps) == 0:
+        print(f"  lstm: skipped (val split empty for sequence_length={sequence_length})")
+        return None
+
+    window_pct = int(round(window_ratio * 100))
+    params_path = params_dir / f"{safe_name}_lstm_{window_pct}pct_params.json"
+    trials_path = params_dir / f"{safe_name}_lstm_{window_pct}pct_trials.csv"
+
+    print(
+        f"  lstm: sequence_length={sequence_length} | "
+        f"train_laps={len(train_laps)} | val_laps={len(val_laps)} | "
+        f"tuning with {int(lstm_cfg['lstm_optuna_trials'])} Optuna trials ...",
+        flush=True,
+    )
+
+    tuned_cfg, best_epoch, optuna_summary = tune_lstm_hyperparams(
+        X_model_raw, y_model, lap_model_sorted, group_model,
+        train_laps, val_laps,
+        cat_cols, lstm_cfg, seed,
+        params_path=params_path, trials_path=trials_path,
+    )
+    tuned_cfg["lstm_sequence_length"] = sequence_length
+
+    # Re-check train/val after tuning (sequence_length is fixed, so no change expected)
+    n_train_laps = max(sequence_length + 1, int(np.floor(n_model_laps * float(config["window_train_ratio"]))))
+    train_laps = unique_laps[:n_train_laps]
+    val_laps = unique_laps[n_train_laps:]
+
+    context_mask, train_mask, _, train_idx, val_idx = build_split_indices(
+        X_model_raw, lap_model_sorted, train_laps, val_laps
+    )
+
+    try:
+        preds_val, y_val_seq, *_, _ = fit_predict_lstm(
+            X_model_raw.loc[train_mask],
+            X_model_raw.loc[context_mask],
+            y_model.loc[context_mask],
+            lap_model_sorted.loc[context_mask],
+            group_model.loc[context_mask],
+            train_idx, val_idx,
+            cat_cols, tuned_cfg, seed=seed,
+        )
+    except ValueError as e:
+        print(f"  lstm: val split failed ({e})")
+        tf.keras.backend.clear_session()
+        return None
+
+    val_metrics = metric_values(y_val_seq, preds_val)
+    final_epoch_count = max(best_epoch, int(tuned_cfg["lstm_min_final_epochs"]))
+
+    try:
+        preds_holdout, y_holdout_seq, *_, _ = fit_final_lstm(
+            X_model_raw, y_model, lap_model_sorted, group_model,
+            X_holdout_raw, y_holdout, lap_holdout_sorted, group_holdout,
+            cat_cols, tuned_cfg, seed=seed, final_epoch_count=final_epoch_count,
+        )
+    except ValueError as e:
+        print(f"  lstm: holdout failed ({e})")
+        tf.keras.backend.clear_session()
+        return None
+
+    holdout_metrics = metric_values(y_holdout_seq, preds_holdout)
+    holdout_ci = calc_holdout_ci(np.asarray(y_holdout_seq), np.asarray(preds_holdout), seed=seed)
+
+    cos = summarize_cos(
+        {"window": [1], "rmse": [val_metrics["rmse"]], "mae": [val_metrics["mae"]],
+         "r2": [val_metrics["r2"]], "std": [val_metrics["std"]]},
+        val_metrics["mae"], val_metrics["rmse"],
+        holdout_metrics["mae"], holdout_metrics["rmse"],
+        val_metrics["std"], holdout_metrics["std"],
+        float(config["alpha_cos"]), float(config["beta_cos"]),
+    )
+
+    tf.keras.backend.clear_session()
+
+    print(
+        f"  lstm: val_RMSE={val_metrics['rmse']:.4f} | "
+        f"holdout_RMSE={holdout_metrics['rmse']:.4f} | "
+        f"COS_RMSE={cos['cos_rmse']:.4f}"
+    )
+
+    return {
+        "window_ratio": window_ratio,
+        "sequence_length": sequence_length,
+        "validation": "lstm_single_split",
+        "model": "lstm",
+        "n_folds": 1,
+        "ew_or_sw_rmse_mean": val_metrics["rmse"],
+        "ew_or_sw_mae_mean": val_metrics["mae"],
+        "ew_or_sw_r2_mean": val_metrics["r2"],
+        "ew_or_sw_residual_std_mean": val_metrics["std"],
+        "holdout_rmse": holdout_metrics["rmse"],
+        "holdout_rmse_ci_lower": holdout_ci["rmse"][0],
+        "holdout_rmse_ci_upper": holdout_ci["rmse"][1],
+        "holdout_mae": holdout_metrics["mae"],
+        "holdout_mae_ci_lower": holdout_ci["mae"][0],
+        "holdout_mae_ci_upper": holdout_ci["mae"][1],
+        "holdout_r2": holdout_metrics["r2"],
+        "holdout_r2_ci_lower": holdout_ci["r2"][0],
+        "holdout_r2_ci_upper": holdout_ci["r2"][1],
+        "holdout_residual_std": holdout_metrics["std"],
+        "cos_mae": cos["cos_mae"],
+        "cos_mae_ci_lower": cos["cos_mae_ci"][0],
+        "cos_mae_ci_upper": cos["cos_mae_ci"][1],
+        "cos_rmse": cos["cos_rmse"],
+        "cos_rmse_ci_lower": cos["cos_rmse_ci"][0],
+        "cos_rmse_ci_upper": cos["cos_rmse_ci"][1],
+        "optuna_best_rmse": float(optuna_summary["best_value"]) if optuna_summary else None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--models", nargs="+", choices=["lr", "xgb", "lstm"], default=["lr", "xgb", "lstm"],
+        help="Which models to include in the sweep (default: all).",
+    )
+    args = parser.parse_args()
+    run_models = set(args.models)
+
     target_gp_name, config, repo_root, laps_cleaned = load_cleaned_data(Path(__file__))
     df_base = laps_cleaned.copy()
 
@@ -319,6 +480,28 @@ def main():
         X_model_raw, y_model, X_holdout_raw, cat_cols
     )
 
+    # LSTM setup
+    if _LSTM_AVAILABLE:
+        lstm_base_cfg = lstm_config(config)
+        group_cols = [col for col in list(lstm_base_cfg["lstm_group_cols"]) if col in df_base.columns]
+
+        holdout_laps = lap_series.loc[holdout_idx]
+        holdout_order_idx = holdout_laps.sort_values(kind="mergesort").index
+        lap_holdout_sorted = holdout_laps.loc[holdout_order_idx].reset_index(drop=True)
+        group_model = df_base.loc[model_order_idx, group_cols].reset_index(drop=True)
+        group_holdout = df_base.loc[holdout_order_idx, group_cols].reset_index(drop=True)
+        X_holdout_sorted = X_holdout_raw.loc[holdout_order_idx].reset_index(drop=True)
+        y_holdout_sorted = y_holdout.loc[holdout_order_idx].reset_index(drop=True)
+
+        if "Year" in df_base.columns:
+            n_race_laps = len(
+                pd.to_numeric(df_base.loc[model_order_idx, lap_col], errors="coerce").dropna().unique()
+            )
+        else:
+            n_race_laps = len(unique_laps)
+    else:
+        print("WARNING: TensorFlow not available — LSTM sweep skipped.")
+
     n_steps = round((sweep_max - sweep_min) / sweep_step)
     window_ratios = [round(sweep_min + i * sweep_step, 10) for i in range(n_steps + 1)]
     window_ratios = [r for r in window_ratios if r <= sweep_max + 1e-9]
@@ -348,7 +531,7 @@ def main():
         window_pct = int(round(window_ratio * 100))
 
         # ---- LR (no tuning) ------------------------------------------------
-        for scheme, windows in [("sw", sw_windows), ("ew", ew_windows)]:
+        for scheme, windows in ([("sw", sw_windows), ("ew", ew_windows)] if "lr" in run_models else []):
             if not windows:
                 continue
             label = f"lr_{scheme}"
@@ -370,7 +553,7 @@ def main():
                 )
 
         # ---- XGB (Optuna tuning per scheme) --------------------------------
-        for scheme, windows in [("sw", sw_windows), ("ew", ew_windows)]:
+        for scheme, windows in ([("sw", sw_windows), ("ew", ew_windows)] if "xgb" in run_models else []):
             if not windows:
                 continue
             label = f"xgb_{scheme}"
@@ -423,6 +606,18 @@ def main():
                     f"COS_RMSE={row['cos_rmse']:.4f} | "
                     f"n_est={best_n}"
                 )
+
+        # ---- LSTM ------------------------------------------------------------
+        if _LSTM_AVAILABLE and "lstm" in run_models:
+            row = _run_lstm_for_ratio(
+                window_ratio, n_race_laps,
+                X_model_raw, y_model, lap_model_sorted, group_model,
+                X_holdout_sorted, y_holdout_sorted, lap_holdout_sorted, group_holdout,
+                cat_cols, config, lstm_base_cfg, seed,
+                params_dir, safe_name,
+            )
+            if row:
+                all_rows.append(row)
 
     if not all_rows:
         print("No results generated. Check window size sweep configuration.")
