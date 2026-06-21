@@ -284,6 +284,8 @@ def evaluate_lr_protocol(blocks, config, excluded_encoded_features=None):
         std_holdout,
         float(config["alpha_cos"]),
         float(config["beta_cos"]),
+        r2_m=r2_m,
+        r2_holdout=r2_holdout,
     )
 
     return {
@@ -317,6 +319,9 @@ def evaluate_lr_protocol(blocks, config, excluded_encoded_features=None):
             "cos_rmse": cos["cos_rmse"],
             "cos_rmse_ci_lower": cos["cos_rmse_ci"][0],
             "cos_rmse_ci_upper": cos["cos_rmse_ci"][1],
+            "cos_r2": cos["cos_r2"],
+            "cos_r2_ci_lower": cos["cos_r2_ci"][0],
+            "cos_r2_ci_upper": cos["cos_r2_ci"][1],
         },
     }
 

@@ -177,6 +177,8 @@ def main():
         std_holdout,
         float(config["alpha_cos"]),
         float(config["beta_cos"]),
+        r2_m=r2_m,
+        r2_holdout=r2_holdout,
     )
 
     split_info = {
@@ -239,10 +241,24 @@ def main():
     print(f"          MAE final/EW={cos['mae_final']:.4f}/{cos['mae_sw']:.4f} | STD final/EW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
     print(f"COS_RMSE: {cos['cos_rmse']:.4f} | 95% CI: [{cos['cos_rmse_ci'][0]:.4f}, {cos['cos_rmse_ci'][1]:.4f}]")
     print(f"          RMSE final/EW={cos['rmse_final']:.4f}/{cos['rmse_sw']:.4f} | STD final/EW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
+    print(f"COS_R2:   {cos['cos_r2']:.4f} | 95% CI: [{cos['cos_r2_ci'][0]:.4f}, {cos['cos_r2_ci'][1]:.4f}]")
+    print(f"          R2 final/EW={cos['r2_final']:.4f}/{cos['r2_sw']:.4f} | STD final/EW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
 
     print("\n--- Final model coefficients ---")
     coefs = pd.Series(final_model.coef_, index=feature_names)
     print(coefs.reindex(coefs.abs().sort_values(ascending=False).index).head(20).to_frame("coefficient"))
+
+    # Persist per-row baseline predictions (OOF + holdout) so the hybrid model can reuse
+    # this exact baseline instead of regenerating it. Auxiliary and non-destructive: a
+    # failure here must not affect the reported LR-EW artifacts/metrics above.
+    try:
+        from baseline_utils import export_baseline_predictions
+
+        export_baseline_predictions(
+            repo_root, config, "lr_ew", df_base, num_cols, cat_cols, target_col, lap_col
+        )
+    except Exception as exc:  # pragma: no cover - export is best-effort
+        print(f"WARNING: could not export LR-EW baseline predictions: {exc}")
 
 
 if __name__ == "__main__":

@@ -432,6 +432,8 @@ def main():
         std_holdout,
         float(config["alpha_cos"]),
         float(config["beta_cos"]),
+        r2_m=r2_m,
+        r2_holdout=r2_holdout,
     )
 
     split_info = {
@@ -520,6 +522,8 @@ def main():
     print(f"          MAE final/SW={cos['mae_final']:.4f}/{cos['mae_sw']:.4f} | STD final/SW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
     print(f"COS_RMSE: {cos['cos_rmse']:.4f} | 95% CI: [{cos['cos_rmse_ci'][0]:.4f}, {cos['cos_rmse_ci'][1]:.4f}]")
     print(f"          RMSE final/SW={cos['rmse_final']:.4f}/{cos['rmse_sw']:.4f} | STD final/SW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
+    print(f"COS_R2:   {cos['cos_r2']:.4f} | 95% CI: [{cos['cos_r2_ci'][0]:.4f}, {cos['cos_r2_ci'][1]:.4f}]")
+    print(f"          R2 final/SW={cos['r2_final']:.4f}/{cos['r2_sw']:.4f} | STD final/SW={cos['std_final']:.4f}/{cos['std_sw']:.4f}")
 
     print("\n--- Sequential holdout block diagnostic ---")
     print("NOTE: diagnostic only; these blocks are not used for tuning or model selection.")

@@ -20,9 +20,9 @@ import xgboost as xgb
 
 from modeling_utils import (
     align_one_hot,
-    build_lr_model_paths,
+    build_lr_ew_model_paths,
     build_sequential_split,
-    build_xgb_model_paths,
+    build_xgb_ew_model_paths,
     load_cleaned_data,
     load_simple_yaml,
     prepare_raw_features,
@@ -111,8 +111,8 @@ def build_modeling_block(df_base: pd.DataFrame, config: dict):
 def load_lr_payload(model_path: Path) -> dict:
     if not model_path.exists():
         raise FileNotFoundError(
-            f"Linear Regression model not found: {model_path}\n"
-            "Run Scripts/Source/model_lr_sw.py for this Grand Prix first."
+            f"Linear Regression EW model not found: {model_path}\n"
+            "Run Scripts/Source/model_lr_ew.py for this Grand Prix first."
         )
     with model_path.open("rb") as file:
         return pickle.load(file)
@@ -121,8 +121,8 @@ def load_lr_payload(model_path: Path) -> dict:
 def load_xgb_booster(model_path: Path) -> xgb.Booster:
     if not model_path.exists():
         raise FileNotFoundError(
-            f"XGBoost model not found: {model_path}\n"
-            "Run Scripts/Source/model_xgb_sw.py for this Grand Prix first."
+            f"XGBoost EW model not found: {model_path}\n"
+            "Run Scripts/Source/model_xgb_ew.py for this Grand Prix first."
         )
     booster = xgb.Booster()
     booster.load_model(str(model_path))
@@ -359,8 +359,8 @@ def run_single_interpretability(
 
     X_model_raw, y_model, _num_cols, cat_cols = build_modeling_block(laps_cleaned.copy(), config)
 
-    lr_model_path, lr_metadata_path = build_lr_model_paths(repo_root, config)
-    xgb_model_path, xgb_metadata_path = build_xgb_model_paths(repo_root, config)
+    lr_model_path, lr_metadata_path = build_lr_ew_model_paths(repo_root, config)
+    xgb_model_path, xgb_metadata_path = build_xgb_ew_model_paths(repo_root, config)
 
     lr_payload = load_lr_payload(lr_model_path)
     lr_coefficients_csv, lr_coefficients_png = save_lr_coefficients(lr_payload, output_dir, safe_name)
@@ -398,11 +398,12 @@ def run_single_interpretability(
 
     manifest = {
         "target_gp_name": target_gp_name,
+        "validation_protocol": "expanding_window",
         "source_models": {
-            "linear_regression": str(lr_model_path),
-            "linear_regression_metadata": str(lr_metadata_path),
-            "xgboost": str(xgb_model_path),
-            "xgboost_metadata": str(xgb_metadata_path),
+            "linear_regression_ew": str(lr_model_path),
+            "linear_regression_ew_metadata": str(lr_metadata_path),
+            "xgboost_ew": str(xgb_model_path),
+            "xgboost_ew_metadata": str(xgb_metadata_path),
         },
         "diagnostic_block": "first_sequential_modeling_block",
         "outputs": {

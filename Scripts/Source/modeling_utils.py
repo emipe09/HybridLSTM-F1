@@ -616,7 +616,19 @@ def build_sequential_split(df_base, valid_indices, holdout_ratio, lap_col):
     )
 
 
-def summarize_cos(results, mae_m, rmse_m, mae_holdout, rmse_holdout, std_m, std_holdout, alpha_cos, beta_cos):
+def summarize_cos(
+    results,
+    mae_m,
+    rmse_m,
+    mae_holdout,
+    rmse_holdout,
+    std_m,
+    std_holdout,
+    alpha_cos,
+    beta_cos,
+    r2_m=None,
+    r2_holdout=None,
+):
     cos_mae, mae_sw, mae_final, std_sw, std_final = calc_cos_metric(
         mae_m, mae_holdout, std_m, std_holdout, alpha=alpha_cos, beta=beta_cos
     )
@@ -633,7 +645,7 @@ def summarize_cos(results, mae_m, rmse_m, mae_holdout, rmse_holdout, std_m, std_
     _, cos_mae_l, cos_mae_u = calc_stats(cos_mae_windows)
     _, cos_rmse_l, cos_rmse_u = calc_stats(cos_rmse_windows)
 
-    return {
+    summary = {
         "cos_mae": cos_mae,
         "cos_rmse": cos_rmse,
         "cos_mae_ci": (cos_mae_l, cos_mae_u),
@@ -645,3 +657,30 @@ def summarize_cos(results, mae_m, rmse_m, mae_holdout, rmse_holdout, std_m, std_
         "std_sw": std_sw,
         "std_final": std_final,
     }
+
+    # COS for R2. Unlike MAE/RMSE (lower is better), R2 is higher-is-better, so the
+    # accuracy ratio is inverted (r2_sw / r2_final) to keep the same COS semantics:
+    # ~1.0 means parity between windows and holdout and lower means the holdout
+    # generalizes better. NaN is returned when the denominators are degenerate.
+    cos_r2 = np.nan
+    cos_r2_l = np.nan
+    cos_r2_u = np.nan
+    r2_sw = np.nan if r2_m is None else float(r2_m)
+    r2_final = np.nan if r2_holdout is None else float(r2_holdout)
+    if r2_m is not None and r2_holdout is not None and not np.isclose(r2_final, 0):
+        if not np.isclose(std_sw, 0):
+            cos_r2 = alpha_cos * (r2_sw / r2_final) + beta_cos * (std_final / std_sw)
+        cos_r2_windows = alpha_cos * (np.array(results["r2"]) / r2_final) + beta_cos * (
+            std_holdout / np.array(results["std"])
+        )
+        _, cos_r2_l, cos_r2_u = calc_stats(cos_r2_windows)
+
+    summary.update(
+        {
+            "cos_r2": cos_r2,
+            "cos_r2_ci": (cos_r2_l, cos_r2_u),
+            "r2_sw": r2_sw,
+            "r2_final": r2_final,
+        }
+    )
+    return summary

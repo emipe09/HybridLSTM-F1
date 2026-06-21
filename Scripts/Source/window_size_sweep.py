@@ -230,7 +230,8 @@ def _aggregate_results(
     std_holdout = float(np.std(np.asarray(y_holdout) - np.asarray(preds_holdout), ddof=1)) if len(y_holdout) > 1 else 0.0
 
     cos = summarize_cos(
-        window_results, mae_m, rmse_m, mae_holdout, rmse_holdout, std_m, std_holdout, alpha_cos, beta_cos
+        window_results, mae_m, rmse_m, mae_holdout, rmse_holdout, std_m, std_holdout, alpha_cos, beta_cos,
+        r2_m=r2_m, r2_holdout=r2_holdout,
     )
 
     return {
@@ -267,6 +268,9 @@ def _aggregate_results(
         "cos_rmse": cos["cos_rmse"],
         "cos_rmse_ci_lower": cos["cos_rmse_ci"][0],
         "cos_rmse_ci_upper": cos["cos_rmse_ci"][1],
+        "cos_r2": cos["cos_r2"],
+        "cos_r2_ci_lower": cos["cos_r2_ci"][0],
+        "cos_r2_ci_upper": cos["cos_r2_ci"][1],
     }
 
 
@@ -364,6 +368,7 @@ def _run_lstm_for_ratio(
         holdout_metrics["mae"], holdout_metrics["rmse"],
         val_metrics["std"], holdout_metrics["std"],
         float(config["alpha_cos"]), float(config["beta_cos"]),
+        r2_m=val_metrics["r2"], r2_holdout=holdout_metrics["r2"],
     )
 
     tf.keras.backend.clear_session()
@@ -371,7 +376,8 @@ def _run_lstm_for_ratio(
     print(
         f"  lstm: val_RMSE={val_metrics['rmse']:.4f} | "
         f"holdout_RMSE={holdout_metrics['rmse']:.4f} | "
-        f"COS_RMSE={cos['cos_rmse']:.4f}"
+        f"COS_RMSE={cos['cos_rmse']:.4f} | "
+        f"COS_R2={cos['cos_r2']:.4f}"
     )
 
     return {
@@ -400,6 +406,9 @@ def _run_lstm_for_ratio(
         "cos_rmse": cos["cos_rmse"],
         "cos_rmse_ci_lower": cos["cos_rmse_ci"][0],
         "cos_rmse_ci_upper": cos["cos_rmse_ci"][1],
+        "cos_r2": cos["cos_r2"],
+        "cos_r2_ci_lower": cos["cos_r2_ci"][0],
+        "cos_r2_ci_upper": cos["cos_r2_ci"][1],
         "optuna_best_rmse": float(optuna_summary["best_value"]) if optuna_summary else None,
     }
 
@@ -549,7 +558,8 @@ def main():
                 print(
                     f"RMSE_folds={row['ew_or_sw_rmse_mean']:.4f} | "
                     f"RMSE_holdout={row['holdout_rmse']:.4f} | "
-                    f"COS_RMSE={row['cos_rmse']:.4f}"
+                    f"COS_RMSE={row['cos_rmse']:.4f} | "
+                    f"COS_R2={row['cos_r2']:.4f}"
                 )
 
         # ---- XGB (Optuna tuning per scheme) --------------------------------
@@ -604,6 +614,7 @@ def main():
                     f"  {label}: RMSE_folds={row['ew_or_sw_rmse_mean']:.4f} | "
                     f"RMSE_holdout={row['holdout_rmse']:.4f} | "
                     f"COS_RMSE={row['cos_rmse']:.4f} | "
+                    f"COS_R2={row['cos_r2']:.4f} | "
                     f"n_est={best_n}"
                 )
 

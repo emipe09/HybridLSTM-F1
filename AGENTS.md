@@ -9,7 +9,7 @@ The main goal is to model `LapTime_seconds` using FastF1-derived race data, with
 - the full dataset is ordered first by year, then by lap number within each year (e.g. all 2022 laps come before all 2023 laps);
 - sliding-window (SW) and expanding-window (EW) validation inside the first 80% of the ordered dataset;
 - final sequential holdout on the last 20% of the ordered dataset;
-- comparison between Linear Regression and XGBoost models;
+- comparison between Linear Regression, XGBoost and `LSTM_hybrid` (the selected third model: best tabular expanding-window baseline plus an LSTM residual);
 - reporting of RMSE, MAE, R2, residual standard deviation, bootstrap confidence intervals, COS_MAE and COS_RMSE.
 
 This is an academic/research project. Prioritize reproducibility, methodological consistency, clean code and clear experiment reporting.
@@ -46,9 +46,12 @@ Main scripts:
 - `Scripts/Source/model_lr_ew.py` — Linear Regression with expanding-window validation.
 - `Scripts/Source/model_xgb_sw.py` — XGBoost with sliding-window validation.
 - `Scripts/Source/model_xgb_ew.py` — XGBoost with expanding-window validation.
-- `Scripts/Source/window_size_sweep.py` — window size sensitivity analysis across both approaches.
-
-LSTM scripts remain untouched until further notice.
+- `Scripts/Source/model_lstm.py` — pure LSTM with single sequential split and sequential holdout.
+- `Scripts/Source/model_lstm_hybrid.py` — the selected third model (`LSTM_hybrid`): best tabular expanding-window baseline (LR-EW or XGBoost-EW, per circuit) plus an LSTM trained on the residual. Reuses the `model_lstm.py` core (single sequential split, sequence construction, Optuna, epoch calibration).
+- `Scripts/Source/window_size_sweep.py` — window size sensitivity analysis across all approaches.
+- `Scripts/Source/search_space_sweep.py` — baseline XGBoost configurations evaluated on the generic window size; derives initial search space bounds.
+- `Scripts/Source/search_space_sweep_ew.py` — baseline XGBoost configurations evaluated on the **final selected EW window size** for each circuit (`xgb_ew_window_ratio`); derives the definitive circuit-specific search space bounds used in the experiment.
+- `Scripts/Source/run_experiment.py` — runs the final LR-EW + XGBoost-EW experiment for all circuits.
 
 ## Dataset ordering
 
@@ -262,7 +265,7 @@ For `model_lr_sw.py` and `model_lr_ew.py`:
 
 - Preserve preprocessing with imputation, scaling and categorical encoding.
 - Fit preprocessing only on the training portion of each split/window.
-- Never fit scalers, imputers or encoders using validation or holdout data.
+- Never fit scalers, imputers or encoders using validation or holdout data.   
 - Keep results comparable with the XGBoost scripts.
 - `model_lr_sw.py` implements sliding-window validation (see Validation Protocol).
 - `model_lr_ew.py` implements expanding-window validation (see Validation Protocol).
@@ -280,7 +283,7 @@ For `model_xgb_sw.py` and `model_xgb_ew.py`:
 
 ### Optuna configuration
 
-- Number of trials: **20** per optimization run.
+- Number of trials: **100** per optimization run.
 - Sampler: always **TPE** (`optuna.samplers.TPESampler`).
 - Each Grand Prix has its own **circuit-specific search space**, defined in YAML.
 - Before defining each circuit's search space, run a small set of **baseline
@@ -294,6 +297,132 @@ For `model_xgb_sw.py` and `model_xgb_ew.py`:
   global search space across all circuits.
 - Store circuit-specific search spaces in the YAML configuration file so they
   can be updated without touching source code.
+
+## LSTM
+
+Script: `Scripts/Source/model_lstm.py`. Requires TensorFlow/Keras.
+
+`model_lstm.py` is the pure LSTM. The selected third model for the final comparison
+is `LSTM_hybrid` (`Scripts/Source/model_lstm_hybrid.py`): the best tabular
+expanding-window baseline (LR-EW or XGBoost-EW, set per circuit via
+`hybrid_baseline_model` from validation metrics, never the holdout) plus an LSTM
+trained to predict the residual `LapTime_seconds - baseline_prediction`; the final
+prediction is `baseline_prediction + lstm_residual_prediction`. The hybrid reuses
+the LSTM core below unchanged (single sequential split, sequence construction,
+Optuna, epoch calibration) and forces `lstm_target_mode = 'residual_from_tabular'`.
+The baseline series is an out-of-fold expanding-window prediction over the modeling
+block (leakage-free for both the validation split and the final residual targets);
+the holdout is never used to train or select the baseline. The same validation
+protocol, preprocessing, leakage rules and metric set described below apply to the
+hybrid. All current circuits use `lr_ew` as the hybrid baseline and the
+`full_embedding` feature mode.
+
+### Validation protocol
+
+LSTM uses a **single sequential split** instead of sliding/expanding windows:
+
+- The ordered modeling block (first 80% of all laps) is divided into a train split
+  (first `window_train_ratio` of modeling laps) and a validation split (remaining laps).
+- Optuna tuning runs on this single split; `EarlyStopping` on `val_loss` calibrates
+  the epoch count.
+- The final model is retrained on the **full modeling block** for
+  `max(median_optuna_epochs, lstm_min_final_epochs)` epochs.
+- The sequential holdout (last 20%) is never touched until final evaluation.
+
+Expanding/sliding window is not used for LSTM because each (Year, Driver) group
+contributes approximately 50 sequences after windowing — multiple folds would
+fragment this small pool and multiply training cost linearly.
+
+### Sequence construction
+
+Sequences are grouped by `lstm_group_cols` (default: `[Year, Driver]`).
+Within each group, laps are sorted by `LapNumber`.
+For each target lap, the `sequence_length` immediately preceding laps of the same
+group form the input sequence.
+
+Sequence length is derived from YAML:
+
+```
+sequence_length = ceil(n_race_laps * lstm_window_ratio)
+```
+
+`lstm_window_ratio` is the primary key. Falls back to `lstm_ew_window_ratio`, then
+`window_ratio` if not set.
+
+### Preprocessing
+
+- Median imputation → StandardScaler on features (fit on training portion only).
+- One-hot encoding (full rank, no drop-first) aligned between train and context splits.
+- Separate StandardScaler on the target `LapTime_seconds` (fit on training sequences only).
+
+Never fit any transformer using validation or holdout data.
+
+### Optuna configuration
+
+- Trials: **20** per run (controlled by `lstm_optuna_trials` in YAML).
+- Sampler: **TPE** (`optuna.samplers.TPESampler`, `multivariate=True`).
+- Search space version: **v8**. Tuning strategy: **single_sequential_split_v1**.
+- Objective: validation RMSE on the single sequential val split.
+- `lstm_stacked` is always `False` during tuning.
+- Saved parameters are loaded only when `use_saved_lstm_params: true` in YAML **and**
+  the saved file matches the current `search_space_version`, `tuning_strategy`, and
+  `n_trials`. Any mismatch triggers a fresh Optuna run.
+
+Current search space bounds (v8):
+
+| Parameter              | Type        | Range / Choices          |
+|------------------------|-------------|--------------------------|
+| `lstm_units`           | categorical | [64, 128]                |
+| `lstm_dense_units`     | categorical | [64, 128]                |
+| `lstm_dropout`         | float       | [0.05, 0.50]             |
+| `lstm_recurrent_dropout` | float     | [0.20, 0.45]             |
+| `lstm_learning_rate`   | float (log) | [3e-4, 5e-3]             |
+| `lstm_batch_size`      | categorical | [32, 64]                 |
+| `lstm_l2_reg`          | float       | [1e-4, 3e-3]             |
+
+### Model architecture
+
+Input → LSTM(units, dropout, recurrent_dropout, [L2]) → [optional second LSTM if stacked] →
+BatchNormalization → Dense(dense_units, relu, [L2]) → Dense(1).
+Compiled with Adam + MSE loss. Training uses `shuffle=False`.
+
+### Artifacts
+
+Saved under `Scripts/Results/lstm/`:
+
+- `lstm/models/{safe_gp_name}_lstm_model.keras` — final Keras model.
+- `lstm/models/{safe_gp_name}_lstm_model_metadata.json` — full run metadata.
+- `lstm/params/{safe_gp_name}_lstm_params.json` — Optuna best params + epoch count.
+- `lstm/params/{safe_gp_name}_lstm_optuna_trials.csv` — per-trial results.
+
+### Key YAML keys for LSTM
+
+- `lstm_window_ratio` — controls sequence length (primary key).
+- `lstm_tuning_enabled` — set to `false` to skip Optuna and use YAML defaults.
+- `lstm_optuna_trials` — number of Optuna trials (default 20).
+- `lstm_group_cols` — list of columns used to group sequences (default `[Year, Driver]`).
+- `use_saved_lstm_params` — reuse saved params if search space version/strategy/n_trials match.
+- `lstm_min_final_epochs` — floor for the final epoch count (default 10).
+- `lstm_tuning_epochs` / `lstm_tuning_patience` — epochs and patience used during Optuna trials.
+- `lstm_epochs` / `lstm_patience` — epochs and patience used when tuning is disabled.
+
+### Metrics reported
+
+Same metric set as LR and XGBoost:
+
+- Validation split: RMSE, MAE, R2, residual STD.
+- Sequential holdout: RMSE, MAE, R2, each with 95% bootstrap CI.
+- COS_MAE and COS_RMSE (val split plays the role of SW/EW in the formula).
+
+### Running
+
+```bash
+# Linux / macOS
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm.py
+
+# Windows / PowerShell
+$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lstm.py
+```
 
 ## Window size sweep
 
@@ -315,6 +444,40 @@ Rules:
 - The output file path must be defined in the YAML configuration file.
 - Do not overwrite previous sweep results without explicit confirmation.
 - The sweep script must be runnable independently of the main model scripts.
+
+## Final selected configuration per Grand Prix
+
+After running the window size sweep (`window_size_sweep.py`) across both
+validation approaches, the following method and window size were selected as
+the article-facing configuration for each supported Grand Prix. Expanding-window
+(EW) validation was selected for every circuit and every model; no circuit
+currently uses a sliding-window (SW) result as its final reported configuration.
+
+- Bahrain Grand Prix:
+  - Linear Regression: EW, window size 5%.
+  - XGBoost: EW, window size 30%.
+- Saudi Arabian Grand Prix:
+  - Linear Regression: EW, window size 10%.
+  - XGBoost: EW, window size 50%.
+- United States Grand Prix:
+  - Linear Regression: EW, window size 45%.
+  - XGBoost: EW, window size 5%.
+- Italian Grand Prix:
+  - Linear Regression: EW, window size 5%.
+  - XGBoost: EW, window size 50%.
+- Hungarian Grand Prix:
+  - Linear Regression: EW, window size 45%.
+  - XGBoost: EW, window size 40%.
+
+These final selections must be reflected in the per-circuit YAML configuration
+(the window size and method used when running `model_lr_ew.py` and
+`model_xgb_ew.py` for each Grand Prix) and in the README and notebook
+narrative whenever article-facing results are reported. The `model_lr_sw.py`
+and `model_xgb_sw.py` scripts and their SW results remain part of the sweep
+and comparison analysis but are not the final reported configuration for any
+circuit. Do not change these selections without explicitly documenting the
+methodological reason and updating the corresponding notebooks, README and
+result interpretation together.
 
 ## Metrics and reporting
 
@@ -353,6 +516,7 @@ TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_sw.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_ew.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_sw.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_ew.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm.py
 
 # Window size sweep
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/window_size_sweep.py
@@ -364,7 +528,9 @@ $env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lr_sw.py
 $env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lr_ew.py
 $env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_xgb_sw.py
 $env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_xgb_ew.py
+$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lstm.py
 
+# Window size sweep
 $env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/window_size_sweep.py
 ```
 
@@ -419,15 +585,21 @@ This repository supports a paper/TCC. When changing code:
 - Changing script methodology without updating the corresponding notebooks.
 - Leaving README or notebook markdown outdated after code changes.
 - Duplicating metric calculation logic across multiple files.
-- Touching LSTM scripts without explicit instruction.
+- Changing the LSTM validation protocol (single sequential split) to sliding/expanding window without explicit justification.
+- Changing the LSTM search space version or tuning strategy without updating `LSTM_SEARCH_SPACE_VERSION` / `LSTM_TUNING_STRATEGY` constants and clearing saved params.
+- Fitting LSTM transformers (imputer, feature scaler, target scaler) on validation or holdout data.
+- Using saved LSTM params when `search_space_version`, `tuning_strategy`, or `n_trials` do not match the current code.
+- Changing the final selected method/window size for a Grand Prix (see "Final
+  selected configuration per Grand Prix") without explicitly documenting the
+  methodological reason and updating the YAML, README and notebooks together.
 
-## Expected behavior from Codex
+## Expected behavior from Claude
 
 When asked to modify the project:
 
 1. Inspect the relevant script, notebook, README and configuration files first.
 2. Identify the smallest safe change.
-3. Preserve the temporal modeling protocol (Year → LapNumber ordering, 80/20 split, SW/EW inside the modeling block).
+3. Preserve the temporal modeling protocol (Year → LapNumber ordering, 80/20 split, SW/EW inside the modeling block, single sequential split for LSTM).
 4. Keep notebooks and scripts methodologically consistent.
 5. Move repeated constants and paths to YAML configuration files when appropriate.
 6. Reuse shared functions for metrics and repeated logic.
@@ -435,4 +607,3 @@ When asked to modify the project:
 8. Explain any impact on metrics, leakage risk or reproducibility.
 9. For methodological changes, update the relevant notebooks so the narrative, code and outputs match the scripts.
 10. Avoid unnecessary formatting-only diffs.
-11. Do not modify LSTM scripts unless explicitly instructed.

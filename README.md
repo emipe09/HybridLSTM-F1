@@ -1,6 +1,12 @@
 # Formula 1 Race-Pace Prediction
 
-This repository contains the current research code and notebooks for multi-circuit Formula 1 lap-time prediction. The project uses public FastF1-derived race data to model `LapTime_seconds` with a temporal protocol that mirrors a real race: sliding-window validation inside the modeling segment and a final sequential holdout on the last laps.
+This repository contains the current research code and notebooks for multi-circuit Formula 1 lap-time prediction. The project uses public FastF1-derived race data to model `LapTime_seconds` with a temporal protocol that mirrors a real race: window-based validation (sliding-window and expanding-window) inside the modeling segment and a final sequential holdout on the last laps.
+
+The final model comparison covers three model families:
+
+- **Linear Regression** (expanding-window validation);
+- **XGBoost** (expanding-window validation, circuit-specific Optuna search space);
+- **`LSTM_hybrid`** — the selected third model: the best tabular expanding-window baseline (LR-EW or XGBoost-EW, chosen per circuit from validation metrics) plus an LSTM that predicts the residual. The LSTM component uses a single sequential validation split rather than sliding/expanding windows.
 
 ## Scope
 
@@ -28,15 +34,23 @@ TCC/
 |  |- ModelData/
 |  |- Notebooks/
 |  |- Source/
-|     |- backward_elimination.py
-|     |- correlation_ablation_lr.py
-|     |- model_lstm_sw.py
 |     |- model_lr_sw.py
 |     |- model_lr_ew.py
 |     |- model_xgb_sw.py
 |     |- model_xgb_ew.py
-|     |- modeling_utils.py
+|     |- model_lstm.py
+|     |- model_lstm_hybrid.py
 |     |- window_size_sweep.py
+|     |- search_space_sweep.py
+|     |- search_space_sweep_ew.py
+|     |- run_experiment.py
+|     |- run_all_models.py
+|     |- model_interpretability.py
+|     |- backward_elimination.py
+|     |- correlation_ablation_lr.py
+|     |- regression_diagnostics_lr.py
+|     |- modeling_utils.py
+|     |- baseline_utils.py
 |     |- xgb_utils.py
 |- configs/
 |  |- bahrain.yaml
@@ -85,13 +99,18 @@ The reproducible modeling and feature-selection scripts are kept in `Scripts/Sou
 - `model_xgb_sw.py`: XGBoost with regularized Optuna hyperparameter tuning, sliding-window validation, and sequential holdout.
 - `model_xgb_ew.py`: XGBoost with expanding-window validation and sequential holdout. Runs an independent Optuna study per fold (same strategy as SW) and aggregates hyperparameters by median across all folds.
 - `window_size_sweep.py`: window-size sensitivity sweep that evaluates all four combinations of SW/EW × LR/XGBoost for window ratios from the YAML-configured range (default 5%–50% in 5% steps). XGBoost uses pre-tuned parameters loaded from the SW params JSON; Optuna is not re-run per window size. Results are saved to a CSV defined in the YAML configuration.
-- `model_lstm_sw.py`: initial Keras LSTM regression baseline with YAML hyperparameters, grouped previous-window sequences, sliding-window validation inside the first 80% modeling block, and sequential holdout.
+- `search_space_sweep.py`: baseline XGBoost configurations evaluated on the generic window size to derive an initial directional prior for each circuit's search space.
+- `search_space_sweep_ew.py`: baseline XGBoost configurations evaluated on the final selected EW window size per circuit (`xgb_ew_window_ratio`); produces the definitive circuit-specific search-space bounds stored in the YAML files.
+- `model_lstm.py`: pure Keras LSTM regression model. Uses a single sequential split (first `window_train_ratio` of the modeling block to train, the rest to validate), Optuna tuning with `EarlyStopping` to calibrate the epoch count, retraining on the full modeling block, and the untouched sequential holdout for final evaluation.
+- `model_lstm_hybrid.py`: the selected `LSTM_hybrid` model. The best tabular expanding-window baseline (LR-EW or XGBoost-EW, set per circuit via `hybrid_baseline_model` from validation metrics, never the holdout) produces predictions, and the LSTM is trained to predict the residual `LapTime_seconds - baseline_prediction`; the final prediction is `baseline_prediction + lstm_residual_prediction`. It reuses the LSTM core from `model_lstm.py` unchanged and sweeps `lstm_window_ratio` values, keeping the best by validation RMSE.
+- `run_experiment.py`: runs the final per-circuit experiment (LR-EW + XGBoost-EW) for all circuits using the window ratios encoded in each YAML.
 - `model_interpretability.py`: unified interpretability runner that loads the saved Linear Regression and XGBoost models, then exports LR coefficients, XGBoost feature importance, XGBoost SHAP values, and a local SHAP force plot.
 - `backward_elimination.py`: p-value based backward elimination for the Linear Regression design matrix, fitted only on the first sequential modeling block.
 - `correlation_ablation_lr.py`: Linear Regression ablation runner that detects encoded-feature pairs with `|r| >= 0.80` inside the modeling block, then reruns the full sliding-window and sequential-holdout protocol after removing one feature from each pair.
 - `regression_diagnostics_lr.py`: Linear Regression residual-diagnostics runner that fits the model on the sequential modeling block and generates in-sample diagnostics for that retrained 80% block while keeping the final holdout unused.
 - `run_all_models.py`: batch runner for executing configured model scripts across all configured Grand Prix events.
 - `modeling_utils.py`: shared configuration, temporal split, encoding, metric, confidence interval, COS, and MLflow tracking helpers. Includes `build_expanding_windows()` and path builders for EW artifacts.
+- `baseline_utils.py`: shared helpers for the hybrid tabular baseline (out-of-fold expanding-window predictions, block predictions, saved-prediction reuse, and XGBoost-EW hyperparameter resolution) with leakage control.
 - `xgb_utils.py`: shared XGBoost utilities (search-space definitions, Optuna integration, DMatrix construction, parameter aggregation) used by both SW and EW XGBoost scripts.
 
 Categorical encoders, imputers and scalers are fitted only on the training
@@ -126,30 +145,67 @@ holdout metrics, and JSON artifacts for the resolved configuration and summary
 results. XGBoost runs also log the generated parameter JSON when it exists. The default local tracking directory is
 `Scripts/Results/mlruns`, which is treated as generated output.
 
-Run the first simple LSTM baseline from the repository root with:
+### LSTM and LSTM_hybrid
+
+The third model family uses an LSTM. Unlike LR and XGBoost, the LSTM does **not**
+use sliding/expanding windows; it uses a **single sequential split** because each
+`(Year, Driver)` group contributes only a small pool of sequences after windowing,
+and multiple folds would fragment that pool and multiply training cost.
+
+`model_lstm.py` is the pure LSTM; `model_lstm_hybrid.py` is the selected
+`LSTM_hybrid` model. Run them from the repository root:
 
 ```bash
-TARGET_GP_NAME="Bahrain Grand Prix" .venv/bin/python Scripts/Source/model_lstm_sw.py
+# Linux / macOS
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm_hybrid.py
 ```
 
 ```powershell
+# Windows / PowerShell
 $env:TARGET_GP_NAME = "Bahrain Grand Prix"
-.\.venv\Scripts\python.exe Scripts/Source/model_lstm_sw.py
+.\.venv\Scripts\python.exe Scripts/Source/model_lstm.py
+.\.venv\Scripts\python.exe Scripts/Source/model_lstm_hybrid.py
 ```
 
-The LSTM configuration is read from the selected circuit YAML file. The current
-pipeline uses the first 80% modeling block to build supervised temporal
-sequences and evaluates them with feasible sliding windows inside that block.
-Optuna tunes values such as
-`lstm_units`, `lstm_dropout`, `lstm_batch_size`, `lstm_learning_rate`, and
-learning-rate reduction settings. The LSTM sequence length is not tuned; it is
-derived from the sliding-window training length. LSTM preprocessing uses median
-imputation, one-hot encoding, and MinMax scaling fitted only on the current
-window-training portion. LSTM tensors use the previous derived training-window
-rows within each configured sequence group to predict the next
-`LapTime_seconds`. The final model is retrained on the full 80% modeling block
-with the epoch count calibrated from feasible sliding windows, and the final 20%
-sequential holdout remains untouched until final evaluation.
+**How `LSTM_hybrid` fits the methodology**
+
+- **Temporal ordering.** The dataset is ordered by `Year`, then by `LapNumber`
+  within each year (all 2022 laps precede 2023, then 2024, then 2025).
+- **80/20 sequential holdout.** The first 80% of the ordered rows form the
+  modeling block; the last 20% are the sequential holdout, which is never touched
+  until final evaluation.
+- **Single sequential validation split.** Inside the modeling block, the first
+  `window_train_ratio` (0.80) of laps trains and the remaining laps validate.
+  Optuna tunes the LSTM on this single split and `EarlyStopping` on `val_loss`
+  calibrates the epoch count; the final model is retrained on the full modeling
+  block for `max(median_optuna_epochs, lstm_min_final_epochs)` epochs.
+- **Sequence construction.** Sequences are grouped by `lstm_group_cols`
+  (`[Year, Driver]`) and sorted by `LapNumber`. For each target lap, the
+  `sequence_length` immediately preceding laps of the same group form the input,
+  where `sequence_length = ceil(n_race_laps * lstm_window_ratio)`. The hybrid
+  sweeps a list of `lstm_window_ratio` values and keeps the best by validation
+  RMSE (never the holdout).
+- **Hybrid target.** The best tabular EW baseline (per circuit, all circuits
+  currently use LR-EW) predicts the lap time, the LSTM learns the residual
+  `LapTime_seconds - baseline_prediction`, and the final prediction is
+  `baseline_prediction + lstm_residual_prediction`.
+- **Preprocessing.** Median imputation → `StandardScaler` on features, one-hot
+  encoding (full rank), and a separate `StandardScaler` on the target. All
+  transformers are fit on the training portion only.
+- **Leakage prevention.** The tabular baseline used as the residual target is an
+  out-of-fold (expanding-window) series over the modeling block, so every baseline
+  value is produced by a model trained only on earlier laps. The holdout is never
+  used to train or select the baseline, and no transformer is fit on validation or
+  holdout data.
+- **Metrics reported.** Validation split: RMSE, MAE, R², residual STD. Sequential
+  holdout: RMSE, MAE, R², each with a 95% bootstrap confidence interval. Plus
+  `COS_MAE` and `COS_RMSE` (the validation split plays the SW/EW role in the COS
+  formula). The standalone tabular baseline's own holdout metrics are also logged
+  for comparison.
+
+The selected per-circuit `LSTM_hybrid` hyperparameters are documented in
+[LSTM_hybrid Selected Hyperparameters](#lstm_hybrid-selected-hyperparameters).
 
 ## Window-Size Sensitivity Analysis and Circuit-Specific Model Selection
 
@@ -171,42 +227,52 @@ EW with XGBoost sometimes improved holdout stability relative to SW, especially 
 
 ### Selected Configurations per Circuit
 
-The table below records the final per-circuit model and window-ratio choices. These values are encoded as `lr_ew_window_ratio`, `xgb_ew_window_ratio`, and `xgb_sw_window_ratio` in each circuit's YAML configuration file. All other circuits or model combinations that are not the preferred variant can still be run but will fall back to `window_ratio`.
+The table below records the final per-circuit model and window-ratio choices.
+**Expanding-window (EW) validation was selected for every circuit and every
+model**; no circuit uses a sliding-window (SW) result as its final reported
+configuration. These values are encoded as `lr_ew_window_ratio` and
+`xgb_ew_window_ratio` in each circuit's YAML configuration file. The third model,
+`LSTM_hybrid`, uses the best tabular EW baseline (LR-EW for all circuits) plus an
+LSTM residual; see its own hyperparameter section below.
 
 | Grand Prix | Best LR approach | LR window | Best XGB approach | XGB window |
 |---|---|---|---|---|
 | Bahrain Grand Prix | LR-EW | 5% | XGB-EW | 30% |
-| Hungarian Grand Prix | LR-EW | 45% | XGB-SW | 50% |
-| Italian Grand Prix | LR-EW | 5% | XGB-SW | 30% |
+| Hungarian Grand Prix | LR-EW | 45% | XGB-EW | 40% |
+| Italian Grand Prix | LR-EW | 5% | XGB-EW | 50% |
 | Saudi Arabian Grand Prix | LR-EW | 10% | XGB-EW | 50% |
 | United States Grand Prix | LR-EW | 45% | XGB-EW | 5% |
 
 **Bahrain:** LR-EW with 5% was the clear winner — in-window error was the lowest of all EW window sizes and COS was well-behaved. For XGB, EW at 30% offered a good balance: per-fold performance was strong and holdout generalization was better than the 45% window, which had the best in-window scores but generalized slightly worse.
 
-**Hungary:** LR-EW required a large window (45%) to achieve stable holdout results; smaller windows produced poor COS values in this circuit. For XGB, SW at 50% was the most consistent option: per-fold error was low and COS indicated it maintained performance on the holdout. EW was also competitive at 50%, but SW was preferred.
+**Hungary:** LR-EW required a large window (45%) to achieve stable holdout results; smaller windows produced poor COS values in this circuit. For XGB, EW at 40% was the most consistent option, with low per-fold error and a COS indicating it maintained performance on the holdout.
 
-**Italy:** LR-EW performed well with a small 5% window, which stood out clearly among all EW options. XGB-SW at 30% offered the best COS among SW sizes; EW at 50% was also a reasonable alternative, but SW 30% was selected for better holdout stability.
+**Italy:** LR-EW performed well with a small 5% window, which stood out clearly among all EW options. For XGB, EW at 50% gave the best balance of per-fold error and holdout stability, training the model on a substantial portion of the race.
 
-**Saudi Arabia:** LR-EW with 10% was the best performer and showed the lowest COS among EW sizes, meaning strong and stable generalization to the holdout. XGB-EW at 50% was selected because both SW and EW COS values at large window sizes were the most favourable; the XGB-EW 50% window delivered good in-fold error and maintained holdout performance.
+**Saudi Arabia:** LR-EW with 10% was the best performer and showed the lowest COS among EW sizes, meaning strong and stable generalization to the holdout. XGB-EW at 50% was selected because the EW COS values at large window sizes were the most favourable; the XGB-EW 50% window delivered good in-fold error and maintained holdout performance.
 
 **USA:** LR-EW at 45% was the only window where LR produced acceptable holdout results and COS; smaller windows had poor generalization. For XGB, EW at 5% had notably lower in-window error and a better COS than other sizes, making it the clear choice despite the very small window size.
 
 ## Generated XGBoost Hyperparameter Tables
 
-The tables below summarize the latest saved XGBoost parameter artifacts from `Scripts/Results/xgboost/sw/params/`. They are kept in this root README because `Scripts/Results/` is treated as generated output and is normally ignored by Git.
+The tables below document the **final, reported XGBoost configuration**, which uses
+expanding-window (EW) validation for every circuit. The selected hyperparameters
+are the saved artifacts from `Scripts/Results/xgboost/ew/params/`. They are kept in
+this root README because `Scripts/Results/` is treated as generated output and is
+normally ignored by Git. These values are reproducibility detail, not source-code
+defaults; if a Grand Prix configuration, search space, sampler, or saved parameter
+JSON changes, regenerate or review these tables before using them.
 
-These values are generated outputs, not source-code defaults. If a Grand Prix configuration, search space, sampler, or saved parameter JSON changes, regenerate or review these tables before using them in the paper.
-
-XGBoost tuning is performed separately for each sliding-window validation fold
+XGBoost tuning is performed separately for each expanding-window validation fold
 inside the first 80% modeling block. For each fold, Optuna uses the configured
-TPE sampler and runs 200 trials to minimize validation RMSE. The final
-sequential holdout is not used during this selection stage. After all window
-studies are complete, the final model uses the median of the best
-window-specific hyperparameters; integer-valued parameters are rounded to the
-nearest integer, and `n_estimators` is taken as the median early-stopping
-iteration observed across the tuned windows. This keeps hyperparameter
-selection tied to the same temporal validation protocol used for model
-assessment.
+TPE sampler and runs `optuna_trials` (100) trials to minimize validation RMSE. The
+final sequential holdout is not used during this selection stage. After all fold
+studies are complete, the final model uses the median of the best fold-specific
+hyperparameters across all folds; integer-valued parameters are rounded to the
+nearest integer, and `n_estimators` is taken as the median early-stopping iteration
+observed across the tuned folds (`n_estimators_source = median_all_folds`). This
+keeps hyperparameter selection tied to the same temporal validation protocol used
+for model assessment.
 
 ### XGBoost Search Space by Grand Prix
 
@@ -214,25 +280,65 @@ All ranges are inclusive and are read from the circuit YAML configuration files.
 
 | Grand Prix | learning_rate | max_depth | min_child_weight | subsample | colsample_bytree | gamma | reg_alpha | reg_lambda |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Bahrain Grand Prix | 0.020-0.070 | 3-5 | 2-8 | 0.55-0.75 | 0.82-0.98 | 0.05-1.50 | 0.00000001-0.01 | 0.00000001-0.10 |
-| Saudi Arabian Grand Prix | 0.025-0.060 | 8-10 | 1-5 | 0.55-0.70 | 0.82-0.90 | 0.05-0.60 | 0.00010-0.10 | 0.00010-0.020 |
-| United States Grand Prix | 0.045-0.085 | 5-7 | 7-13 | 0.60-0.72 | 0.86-0.96 | 0.40-1.50 | 0.00010-0.05 | 0.20-1.50 |
-| Italian Grand Prix | 0.010-0.020 | 5-6 | 6-12 | 0.60-0.72 | 0.82-0.92 | 0.20-0.80 | 0.0001-0.01 | 1.5-4.5 |
-| Hungarian Grand Prix | 0.025-0.100 | 2-3 | 4-12 | 0.60-0.85 | 0.74-0.86 | 0.20-0.80 | 0.0001-0.50 | 0.01-5.0 |
+| Bahrain Grand Prix | 0.006667-0.300 | 3-7 | 4-6 | 0.656-0.844 | 0.744-0.956 | 0.0-0.700 | 0.000333-0.0300 | 0.167-3.000 |
+| Saudi Arabian Grand Prix | 0.006667-0.300 | 1-7 | 4-6 | 0.678-0.872 | 0.722-0.928 | 0.0-0.700 | 0.000333-0.0300 | 0.167-3.000 |
+| United States Grand Prix | 0.0167-0.500 | 3-9 | 1-6 | 0.719-1.000 | 0.809-1.000 | 0.0-0.700 | 0.00000333-0.0300 | 0.0333-3.000 |
+| Italian Grand Prix | 0.0167-0.300 | 1-7 | 4-6 | 0.678-0.872 | 0.722-0.928 | 0.0-0.700 | 0.000333-0.0300 | 0.167-3.000 |
+| Hungarian Grand Prix | 0.006667-0.300 | 1-5 | 4-6 | 0.678-0.872 | 0.722-0.928 | 0.0-0.700 | 0.000333-0.003000 | 0.167-3.000 |
 
-### XGBoost Final Hyperparameters
+### XGBoost Final Hyperparameters (Expanding Window)
 
-| Grand Prix | Seed | Sampler | Optuna trials/window | Final n_estimators | Final learning_rate | Final max_depth | Final min_child_weight | Final subsample | Final colsample_bytree | Final gamma | Final reg_alpha | Final reg_lambda |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Bahrain Grand Prix | 42 | tpe | 200 | 271 | 0.047956 | 4 | 3 | 0.653872 | 0.876446 | 0.168908 | 0.000006 | 0.000001 |
-| Saudi Arabian Grand Prix | 42 | tpe | 200 | 250 | 0.040824 | 9 | 2 | 0.578319 | 0.832514 | 0.313078 | 0.002627 | 0.001516 |
-| United States Grand Prix | 42 | tpe | 200 | 323 | 0.064932 | 6 | 8 | 0.641973 | 0.903605 | 0.550455 | 0.003296 | 0.482227 |
-| Italian Grand Prix | 42 | tpe | 200 | 840 | 0.016880 | 6 | 6 | 0.667180 | 0.864367 | 0.218150 | 0.000749 | 1.698600 |
-| Hungarian Grand Prix | 42 | tpe | 200 | 124 | 0.067631 | 2 | 4 | 0.694635 | 0.819641 | 0.309690 | 0.004237 | 0.092258 |
+These are the final reported XGBoost-EW hyperparameters per circuit, aggregated as
+the median of the best Optuna parameters across all expanding-window folds (source:
+`Scripts/Results/xgboost/ew/params/{safe_gp_name}_xgb_params_ew.json`). The EW window
+ratio is the selected `xgb_ew_window_ratio` from the window-size sweep.
 
-### Best Individual Validation Window by Grand Prix
+| Grand Prix | EW window | Seed | Sampler | Optuna trials/fold | Final n_estimators | Final learning_rate | Final max_depth | Final min_child_weight | Final subsample | Final colsample_bytree | Final gamma | Final reg_alpha | Final reg_lambda |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Bahrain Grand Prix | 30% | 42 | tpe | 100 | 249 | 0.164969 | 3 | 5 | 0.684174 | 0.904215 | 0.203528 | 0.001370 | 0.510169 |
+| Saudi Arabian Grand Prix | 50% | 42 | tpe | 100 | 152 | 0.199282 | 3 | 4 | 0.756074 | 0.833232 | 0.316344 | 0.003249 | 0.283445 |
+| United States Grand Prix | 5% | 42 | tpe | 100 | 85 | 0.201475 | 6 | 4 | 0.784062 | 0.887642 | 0.213003 | 0.000624 | 0.425945 |
+| Italian Grand Prix | 50% | 42 | tpe | 100 | 395 | 0.061874 | 1 | 5 | 0.784588 | 0.779387 | 0.148427 | 0.002628 | 0.265021 |
+| Hungarian Grand Prix | 40% | 42 | tpe | 100 | 1050 | 0.042898 | 1 | 6 | 0.769281 | 0.909664 | 0.504674 | 0.001244 | 0.531199 |
 
-The best window is the sliding-window validation fold with the lowest validation RMSE among the per-window Optuna winners. It is logged for diagnosis and reporting; under the current script strategy, final model hyperparameters are aggregated across all windows by median rather than copied directly from this single window.
+### LSTM_hybrid Selected Hyperparameters
+
+These are the selected per-circuit hyperparameters for the `LSTM_hybrid` model
+(source: `Scripts/Results/lstm_hybrid/models/{safe_gp_name}_full_embedding_lr_ew_lstm_hybrid_model_metadata.json`).
+They are reproducibility detail for the repository and are not intended for the
+article. Global settings shared by all circuits: tabular baseline `lr_ew`, LSTM
+feature mode `full_embedding`, target mode `residual_from_tabular` (the LSTM learns
+the baseline residual), sequence groups `[Year, Driver]`, embedding columns
+`[Driver, Team]`, single (non-stacked) LSTM, Adam optimizer, `shuffle=False`,
+seed 42, search-space version v8, tuning strategy `single_sequential_split_v1`.
+The `lstm_window_ratio` is the value selected by validation RMSE from each circuit's
+`lstm_window_ratio_sweep` (never the holdout); `sequence_length = ceil(n_race_laps *
+lstm_window_ratio)`. Bahrain and Hungary use fixed sweep-found hyperparameters
+(`lstm_tuning_enabled: false`); Saudi Arabia, USA and Italy were Optuna-tuned. All
+circuits load their saved parameters via `use_saved_lstm_params: true`.
+
+| Grand Prix | lstm_window_ratio | sequence_length | lstm_units | dense_units | dropout | recurrent_dropout | learning_rate | batch_size | l2_reg | final epochs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Bahrain Grand Prix | 0.30 | 17 | 24 | 48 | 0.4132 | 0.0829 | 0.000718 | 16 | 0.000693 | 11 |
+| Saudi Arabian Grand Prix | 0.03 | 2 | 16 | 24 | 0.3308 | 0.0900 | 0.001230 | 16 | 0.000423 | 2 |
+| United States Grand Prix | 0.10 | 6 | 16 | 48 | 0.2409 | 0.1745 | 0.001672 | 16 | 0.001493 | 3 |
+| Italian Grand Prix | 0.05 | 3 | 24 | 24 | 0.3779 | 0.1432 | 0.001414 | 32 | 0.000954 | 2 |
+| Hungarian Grand Prix | 0.03 | 3 | 32 | 48 | 0.2914 | 0.0865 | 0.001169 | 32 | 0.000482 | 14 |
+
+The LSTM search space (v8) tuned by Optuna for the tuned circuits spans
+`lstm_units` ∈ {64, 128}, `lstm_dense_units` ∈ {64, 128}, `lstm_dropout` ∈
+[0.05, 0.50], `lstm_recurrent_dropout` ∈ [0.20, 0.45], `lstm_learning_rate` ∈
+[3e-4, 5e-3] (log), `lstm_batch_size` ∈ {32, 64}, and `lstm_l2_reg` ∈ [1e-4, 3e-3];
+the saved per-circuit values above reflect the fixed sweep-found configuration
+loaded at run time.
+
+### Best Individual Validation Window by Grand Prix (SW sweep diagnostics)
+
+The tables in this and the following section come from the **sliding-window (SW)
+sweep** and are retained for diagnostic and comparison purposes only; they are
+**not** the final reported configuration (see the XGBoost-EW table above). The best
+window is the sliding-window validation fold with the lowest validation RMSE among
+the per-window Optuna winners.
 
 | Grand Prix | Best window | Train laps | Validation laps | RMSE | MAE | R2 | n_estimators | learning_rate | max_depth | min_child_weight | subsample | colsample_bytree | gamma | reg_alpha | reg_lambda | Seed | Sampler | Optuna trials/window |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -464,6 +570,8 @@ TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_sw.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_sw.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_ew.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_ew.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm_hybrid.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/window_size_sweep.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_interpretability.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/backward_elimination.py
@@ -479,6 +587,8 @@ $env:TARGET_GP_NAME = "Bahrain Grand Prix"
 .\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
 .\.venv\Scripts\python.exe Scripts/Source/model_lr_ew.py
 .\.venv\Scripts\python.exe Scripts/Source/model_xgb_ew.py
+.\.venv\Scripts\python.exe Scripts/Source/model_lstm.py
+.\.venv\Scripts\python.exe Scripts/Source/model_lstm_hybrid.py
 .\.venv\Scripts\python.exe Scripts/Source/window_size_sweep.py
 .\.venv\Scripts\python.exe Scripts/Source/model_interpretability.py
 .\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
@@ -489,6 +599,28 @@ $env:TARGET_GP_NAME = "Bahrain Grand Prix"
 On Linux/macOS, paths are case-sensitive. Run commands from the repository root
 and keep directory names exactly as shown, for example `Scripts/Source/` rather
 than `scripts/source/`.
+
+To reproduce the final reported experiment (LR-EW + XGBoost-EW for every circuit,
+using the window ratios encoded in each YAML), use the dedicated runner:
+
+Linux/macOS:
+
+```bash
+python Scripts/Source/run_experiment.py
+python Scripts/Source/run_experiment.py --circuit bahrain italy
+python Scripts/Source/run_experiment.py --with-hybrid
+```
+
+Windows/PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe Scripts/Source/run_experiment.py
+.\.venv\Scripts\python.exe Scripts/Source/run_experiment.py --circuit bahrain italy
+.\.venv\Scripts\python.exe Scripts/Source/run_experiment.py --with-hybrid
+```
+
+Add `--with-hybrid` to also run `LSTM_hybrid` after the tabular models, so the
+reused EW baseline predictions are already available.
 
 To run all configured Grand Prix events and both model families in sequence:
 
@@ -641,8 +773,9 @@ adjust the configured feature set used by the affected circuit models.
 ## Reproducibility Notes
 
 - The final 20% of race laps is reserved as a sequential holdout.
-- Sliding-window and expanding-window validation are performed only inside the first 80% modeling block.
-- XGBoost SW parameter files are generated under `Scripts/Results/xgboost/sw/params/` when needed. XGBoost EW parameter files are generated under `Scripts/Results/xgboost/ew/params/`. Both are ignored by Git.
+- Sliding-window and expanding-window validation are performed only inside the first 80% modeling block. The LSTM and `LSTM_hybrid` models instead use a single sequential split inside that same modeling block.
+- XGBoost SW parameter files are generated under `Scripts/Results/xgboost/sw/params/` when needed. XGBoost EW parameter files (the final reported configuration) are generated under `Scripts/Results/xgboost/ew/params/`. Both are ignored by Git.
+- LSTM artifacts are generated under `Scripts/Results/lstm/` and `LSTM_hybrid` artifacts (models, params, and audit baseline predictions) under `Scripts/Results/lstm_hybrid/`; both are ignored by Git.
 - Window-size sweep results are generated under `Scripts/Results/window_sweep/` and are ignored by Git.
 - MLflow run metadata is generated under `Scripts/Results/mlruns/` by default and is ignored by Git.
 - The notebooks remain the narrative, circuit-specific record of the analysis; the scripts are the lean reproducible runners for GitHub.

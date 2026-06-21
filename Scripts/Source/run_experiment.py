@@ -1,10 +1,11 @@
 """Run the selected model per circuit for the current experiment.
 
-Bahrain, Saudi, USA  -> LR-EW + XGB-EW  (best window ratios encoded in each YAML)
-Hungary, Italy       -> LR-EW + XGB-SW  (best window ratios encoded in each YAML)
+All circuits -> LR-EW + XGB-EW  (best window ratios encoded in each YAML)
 
 Usage:
     python Scripts/Source/run_experiment.py
+    python Scripts/Source/run_experiment.py --circuit hungary
+    python Scripts/Source/run_experiment.py --circuit bahrain italy
     python Scripts/Source/run_experiment.py --continue-on-error
 """
 
@@ -23,7 +24,7 @@ EXPERIMENT_PLAN = [
     ("bahrain.yaml",  ["model_lr_ew.py", "model_xgb_ew.py"]),
     ("saudi.yaml",    ["model_lr_ew.py", "model_xgb_ew.py"]),
     ("usa.yaml",      ["model_lr_ew.py", "model_xgb_ew.py"]),
-    ("hungary.yaml",  ["model_lr_ew.py", "model_xgb_sw.py"]),
+    ("hungary.yaml",  ["model_lr_ew.py", "model_xgb_ew.py"]),
     ("italy.yaml",    ["model_lr_ew.py", "model_xgb_ew.py"]),
 ]
 
@@ -34,6 +35,24 @@ def parse_args():
         "--continue-on-error",
         action="store_true",
         help="Continue running remaining jobs when one step fails.",
+    )
+    parser.add_argument(
+        "--circuit",
+        nargs="+",
+        metavar="NAME",
+        help=(
+            "Run only the specified circuit(s). "
+            "Each NAME is matched against the config file stem (without .yaml). "
+            "Example: --circuit hungary  or  --circuit bahrain italy"
+        ),
+    )
+    parser.add_argument(
+        "--with-hybrid",
+        action="store_true",
+        help=(
+            "Also run the hybrid (best tabular baseline + LSTM residual) after the tabular "
+            "models, so the reused EW parameters are already available."
+        ),
     )
     return parser.parse_args()
 
@@ -48,8 +67,12 @@ def main():
     script_dir = Path(__file__).resolve().parent
     configs_dir = root / "configs"
 
+    circuit_filter = {name.lower().replace(".yaml", "") for name in args.circuit} if args.circuit else None
+
     failures = []
     for config_name, scripts in EXPERIMENT_PLAN:
+        if circuit_filter and Path(config_name).stem not in circuit_filter:
+            continue
         config_path = configs_dir / config_name
         if not config_path.exists():
             print(f"Config not found, skipping: {config_path}", file=sys.stderr)
@@ -58,7 +81,11 @@ def main():
         config = load_simple_yaml(config_path)
         target_gp_name = str(config.get("target_gp_name", config_path.stem))
 
-        for script_name in scripts:
+        circuit_scripts = list(scripts)
+        if args.with_hybrid:
+            circuit_scripts.append("model_lstm_hybrid.py")
+
+        for script_name in circuit_scripts:
             script_path = script_dir / script_name
             env = os.environ.copy()
             env["CONFIG_PATH"] = str(config_path)
