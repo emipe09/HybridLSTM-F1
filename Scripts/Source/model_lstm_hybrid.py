@@ -1,9 +1,11 @@
-"""Hybrid model: best tabular baseline (LR-EW or XGBoost-EW) + LSTM residual.
+"""Hybrid model: Linear Regression (LR-EW) baseline + LSTM residual.
 
-For each Grand Prix the best tabular model is selected per circuit via the YAML key
-``hybrid_baseline_model`` (never from the holdout). The LSTM is trained to predict the
-residual ``LapTime_seconds - baseline_prediction`` and the final prediction is
-``hybrid_prediction = baseline_prediction + lstm_residual_prediction``.
+By design the methodology uses Linear Regression (LR-EW) as the tabular baseline so
+the model keeps a strong linear component, while the LSTM captures the remaining
+complex relationships by learning the baseline residual. The baseline is configured
+per circuit via the YAML key ``hybrid_baseline_model`` (never from the holdout). The
+LSTM is trained to predict the residual ``LapTime_seconds - baseline_prediction`` and
+the final prediction is ``hybrid_prediction = baseline_prediction + lstm_residual_prediction``.
 
 Leakage control (see baseline_utils):
   - Validation: tabular trained on train_laps predicts val_laps (OOS); train-target
@@ -313,8 +315,16 @@ def main():
             baseline_context=baseline_model.loc[context_mask],
         )
         val_metrics = metric_values(y_val_seq, preds_val)
-        print(f"  Val sequences: {len(y_val_seq)} | RMSE={val_metrics['rmse']:.4f} | "
-              f"MAE={val_metrics['mae']:.4f} | R2={val_metrics['r2']:.4f}")
+        val_ci = calc_holdout_ci(y_val_seq, preds_val, seed=seed)
+        print(
+            f"  Val sequences: {len(y_val_seq)} | "
+            f"RMSE={val_metrics['rmse']:.4f} "
+            f"[{val_ci['rmse'][0]:.4f}, {val_ci['rmse'][1]:.4f}] | "
+            f"MAE={val_metrics['mae']:.4f} "
+            f"[{val_ci['mae'][0]:.4f}, {val_ci['mae'][1]:.4f}] | "
+            f"R2={val_metrics['r2']:.4f} "
+            f"[{val_ci['r2'][0]:.4f}, {val_ci['r2'][1]:.4f}]"
+        )
 
         # --- Final model + holdout ---
         (
@@ -328,8 +338,14 @@ def main():
         )
         holdout_ci = calc_holdout_ci(y_holdout_seq, preds_holdout, seed=seed)
         holdout_metrics = metric_values(y_holdout_seq, preds_holdout)
-        print(f"  Holdout RMSE={holdout_metrics['rmse']:.4f} | MAE={holdout_metrics['mae']:.4f} | "
-              f"R2={holdout_metrics['r2']:.4f}")
+        print(
+            f"  Holdout RMSE={holdout_metrics['rmse']:.4f} "
+            f"[{holdout_ci['rmse'][0]:.4f}, {holdout_ci['rmse'][1]:.4f}] | "
+            f"MAE={holdout_metrics['mae']:.4f} "
+            f"[{holdout_ci['mae'][0]:.4f}, {holdout_ci['mae'][1]:.4f}] | "
+            f"R2={holdout_metrics['r2']:.4f} "
+            f"[{holdout_ci['r2'][0]:.4f}, {holdout_ci['r2'][1]:.4f}]"
+        )
 
         return {
             "lstm_window_ratio": float(lstm_window_ratio),
@@ -340,6 +356,7 @@ def main():
             "final_epoch_count": int(final_epoch_count),
             "optuna_summary": optuna_summary,
             "val_metrics": val_metrics,
+            "val_ci": val_ci,
             "holdout_metrics": holdout_metrics,
             "holdout_ci": holdout_ci,
             "y_val_seq": y_val_seq,
@@ -386,6 +403,7 @@ def main():
     final_epoch_count = best["final_epoch_count"]
     optuna_summary = best["optuna_summary"]
     val_metrics = best["val_metrics"]
+    val_ci = best["val_ci"]
     holdout_metrics = best["holdout_metrics"]
     holdout_ci = best["holdout_ci"]
     y_val_seq = best["y_val_seq"]
@@ -471,6 +489,7 @@ def main():
         },
         "final_epoch_count": int(final_epoch_count),
         "val_metrics": val_metrics,
+        "val_ci": val_ci,
         "holdout_metrics": holdout_metrics,
         "baseline_full_holdout_metrics": baseline_holdout_metrics,
         "baseline_full_holdout_note": "tabular baseline over all holdout records (not the LSTM sequence subset)",
@@ -505,8 +524,11 @@ def main():
     }
     summary_metrics = {
         "val_rmse": val_metrics["rmse"],
+        "val_rmse_ci": val_ci["rmse"],
         "val_mae": val_metrics["mae"],
+        "val_mae_ci": val_ci["mae"],
         "val_r2": val_metrics["r2"],
+        "val_r2_ci": val_ci["r2"],
         "val_residual_std": val_metrics["std"],
         "holdout_rmse": holdout_metrics["rmse"],
         "holdout_rmse_ci": holdout_ci["rmse"],
@@ -543,11 +565,22 @@ def main():
         validation_mode="single_split",
     )
 
+    print("\n--- Validation split (hybrid) ---")
+    print(f"Hybrid  RMSE: {val_metrics['rmse']:.4f} | 95% CI: "
+          f"[{val_ci['rmse'][0]:.4f}, {val_ci['rmse'][1]:.4f}]")
+    print(f"Hybrid  MAE:  {val_metrics['mae']:.4f} | 95% CI: "
+          f"[{val_ci['mae'][0]:.4f}, {val_ci['mae'][1]:.4f}]")
+    print(f"Hybrid  R2:   {val_metrics['r2']:.4f} | 95% CI: "
+          f"[{val_ci['r2'][0]:.4f}, {val_ci['r2'][1]:.4f}]")
+
     print("\n--- Sequential holdout (hybrid) ---")
     print(f"Hybrid  RMSE: {holdout_metrics['rmse']:.4f} | 95% CI: "
           f"[{holdout_ci['rmse'][0]:.4f}, {holdout_ci['rmse'][1]:.4f}]")
     print(f"Baseline RMSE (tabular only, full holdout): {baseline_holdout_metrics['rmse']:.4f}")
-    print(f"Hybrid  MAE:  {holdout_metrics['mae']:.4f} | R2: {holdout_metrics['r2']:.4f}")
+    print(f"Hybrid  MAE:  {holdout_metrics['mae']:.4f} | 95% CI: "
+          f"[{holdout_ci['mae'][0]:.4f}, {holdout_ci['mae'][1]:.4f}]")
+    print(f"Hybrid  R2:   {holdout_metrics['r2']:.4f} | 95% CI: "
+          f"[{holdout_ci['r2'][0]:.4f}, {holdout_ci['r2'][1]:.4f}]")
     print(f"COS_RMSE: {cos['cos_rmse']:.4f} | COS_MAE: {cos['cos_mae']:.4f} | COS_R2: {cos['cos_r2']:.4f}")
 
 

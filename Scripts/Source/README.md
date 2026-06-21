@@ -60,8 +60,8 @@ Linear Regression and XGBoost runs record:
 LSTM and `LSTM_hybrid` runs record the same selected Grand Prix, feature lists,
 split ratios, single sequential-split validation metrics, final sequential-holdout
 metrics, the selected sequence configuration, and the saved Keras model metadata.
-`LSTM_hybrid` runs additionally record the tabular baseline model, the selected
-`lstm_window_ratio`, and the baseline holdout metrics.
+`LSTM_hybrid` runs additionally record the Linear Regression (LR-EW) tabular
+baseline, the selected `lstm_window_ratio`, and the baseline holdout metrics.
 
 Start the local UI from the repository root with:
 
@@ -134,18 +134,21 @@ or early stopping. Saved params are reused only when their `search_space_version
 
 ## `model_lstm_hybrid.py`
 
-Runs the selected `LSTM_hybrid` model: the best tabular expanding-window baseline
-(LR-EW or XGBoost-EW, set per circuit via `hybrid_baseline_model` from validation
-metrics, never the holdout) plus an LSTM that predicts the residual. The final
-prediction is `baseline_prediction + lstm_residual_prediction`.
+Runs the selected `LSTM_hybrid` model. By design it uses Linear Regression (LR-EW)
+as the tabular expanding-window baseline so the model keeps a strong linear
+component, plus an LSTM that predicts the baseline residual to capture the
+remaining complex relationships. The final prediction is
+`baseline_prediction + lstm_residual_prediction`. The baseline predictions are an
+out-of-fold expanding-window series over the modeling block and never use the
+holdout.
 
 - Reuses the `model_lstm.py` core unchanged (network, sequences, Optuna, epoch
   calibration) by forcing `lstm_target_mode = 'residual_from_tabular'`.
 - The baseline uses an out-of-fold (expanding-window) prediction series over the
   modeling block for both the validation split and the final residual targets, so
   every baseline value is produced by a model trained only on earlier laps; the
-  holdout is never used to train or select the baseline. Standalone LR-EW/XGB-EW
-  per-row prediction exports are reused when present (via `baseline_utils.py`).
+  holdout is never used to train or select the baseline. Standalone LR-EW per-row
+  prediction exports are reused when present (via `baseline_utils.py`).
 - Sweeps `lstm_window_ratio_sweep` and keeps the configuration with the best
   validation RMSE (never the holdout).
 - Artifacts are saved under `Scripts/Results/lstm_hybrid/` (models, params, and an

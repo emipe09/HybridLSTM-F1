@@ -6,7 +6,7 @@ The final model comparison covers three model families:
 
 - **Linear Regression** (expanding-window validation);
 - **XGBoost** (expanding-window validation, circuit-specific Optuna search space);
-- **`LSTM_hybrid`** — the selected third model: the best  LR-EW per circuit plus an LSTM that predicts the residual. The LSTM component uses a single sequential validation split rather than sliding/expanding windows.
+- **`LSTM_hybrid`** — the selected third model: Linear Regression (LR-EW) as the baseline plus an LSTM that predicts the residual. The methodology deliberately keeps a strong linear component (LR-EW) and lets the LSTM capture the remaining complex relationships through the baseline residual. The LSTM component uses a single sequential validation split rather than sliding/expanding windows.
 
 ## Scope
 
@@ -102,7 +102,7 @@ The reproducible modeling and feature-selection scripts are kept in `Scripts/Sou
 - `search_space_sweep.py`: baseline XGBoost configurations evaluated on the generic window size to derive an initial directional prior for each circuit's search space.
 - `search_space_sweep_ew.py`: baseline XGBoost configurations evaluated on the final selected EW window size per circuit (`xgb_ew_window_ratio`); produces the definitive circuit-specific search-space bounds stored in the YAML files.
 - `model_lstm.py`: pure Keras LSTM regression model. Uses a single sequential split (first `window_train_ratio` of the modeling block to train, the rest to validate), Optuna tuning with `EarlyStopping` to calibrate the epoch count, retraining on the full modeling block, and the untouched sequential holdout for final evaluation.
-- `model_lstm_hybrid.py`: the selected `LSTM_hybrid` model. The best tabular expanding-window baseline (LR-EW or XGBoost-EW, set per circuit via `hybrid_baseline_model` from validation metrics, never the holdout) produces predictions, and the LSTM is trained to predict the residual `LapTime_seconds - baseline_prediction`; the final prediction is `baseline_prediction + lstm_residual_prediction`. It reuses the LSTM core from `model_lstm.py` unchanged and sweeps `lstm_window_ratio` values, keeping the best by validation RMSE.
+- `model_lstm_hybrid.py`: the selected `LSTM_hybrid` model. By design it uses Linear Regression (LR-EW) as the tabular expanding-window baseline so the model keeps a strong linear component, and the LSTM is trained to predict the residual `LapTime_seconds - baseline_prediction` to capture the remaining complex relationships; the final prediction is `baseline_prediction + lstm_residual_prediction`. The baseline predictions come from an out-of-fold expanding-window series over the modeling block (never the holdout). It reuses the LSTM core from `model_lstm.py` unchanged and sweeps `lstm_window_ratio` values, keeping the best by validation RMSE.
 - `run_experiment.py`: runs the final per-circuit experiment (LR-EW + XGBoost-EW) for all circuits using the window ratios encoded in each YAML.
 - `model_interpretability.py`: unified interpretability runner that loads the saved Linear Regression and XGBoost models, then exports LR coefficients, XGBoost feature importance, XGBoost SHAP values, and a local SHAP force plot.
 - `backward_elimination.py`: p-value based backward elimination for the Linear Regression design matrix, fitted only on the first sequential modeling block.
@@ -186,9 +186,11 @@ $env:TARGET_GP_NAME = "Bahrain Grand Prix"
   where `sequence_length = ceil(n_race_laps * lstm_window_ratio)`. The hybrid
   sweeps a list of `lstm_window_ratio` values and keeps the best by validation
   RMSE (never the holdout).
-- **Hybrid target.** The best tabular EW baseline (per circuit, all circuits
-  currently use LR-EW) predicts the lap time, the LSTM learns the residual
-  `LapTime_seconds - baseline_prediction`, and the final prediction is
+- **Hybrid target.** The methodology deliberately uses Linear Regression (LR-EW)
+  as the tabular baseline to give the model a strong linear component. This
+  baseline predicts the lap time, the LSTM learns the residual
+  `LapTime_seconds - baseline_prediction` to capture the remaining complex
+  relationships, and the final prediction is
   `baseline_prediction + lstm_residual_prediction`.
 - **Preprocessing.** Median imputation → `StandardScaler` on features, one-hot
   encoding (full rank), and a separate `StandardScaler` on the target. All
@@ -232,7 +234,7 @@ The table below records the final per-circuit model and window-ratio choices.
 model**; no circuit uses a sliding-window (SW) result as its final reported
 configuration. These values are encoded as `lr_ew_window_ratio` and
 `xgb_ew_window_ratio` in each circuit's YAML configuration file. The third model,
-`LSTM_hybrid`, uses the best tabular EW baseline (LR-EW for all circuits) plus an
+`LSTM_hybrid`, uses Linear Regression (LR-EW) as its tabular baseline plus an
 LSTM residual; see its own hyperparameter section below.
 
 | Grand Prix | Best LR approach | LR window | Best XGB approach | XGB window |

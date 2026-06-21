@@ -38,8 +38,8 @@ lstm_patience: 8
 lstm_reduce_lr_factor: 0.50
 lstm_reduce_lr_patience: 4
 lstm_min_learning_rate: 0.00001
-lstm_tuning_enabled: false  # FIXED: use the hyperparameters found in the sweep (no Optuna)
-lstm_optuna_trials: 10
+lstm_tuning_enabled: true
+lstm_optuna_trials: 50
 lstm_tuning_epochs: 40
 lstm_tuning_patience: 5
 lstm_min_final_epochs: 20
