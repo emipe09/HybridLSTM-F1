@@ -316,12 +316,12 @@ article. Global settings shared by all circuits: tabular baseline `lr_ew`, LSTM
 feature mode `full_embedding`, target mode `residual_from_tabular` (the LSTM learns
 the baseline residual), sequence groups `[Year, Driver]`, embedding columns
 `[Driver, Team]`, single (non-stacked) LSTM, Adam optimizer, `shuffle=False`,
-seed 42, search-space version v8, tuning strategy `single_sequential_split_v1`.
+seed 42, search-space version v11, tuning strategy `single_sequential_split_v1`.
 The `lstm_window_ratio` is the value selected by validation RMSE from each circuit's
 `lstm_window_ratio_sweep` (never the holdout); `sequence_length = ceil(n_race_laps *
-lstm_window_ratio)`. Bahrain and Hungary use fixed sweep-found hyperparameters
-(`lstm_tuning_enabled: false`); Saudi Arabia, USA and Italy were Optuna-tuned. All
-circuits load their saved parameters via `use_saved_lstm_params: true`.
+lstm_window_ratio)`. Bahrain uses fixed sweep-found hyperparameters
+(`lstm_tuning_enabled: false`); Saudi Arabia, USA, Italy and Hungary were Optuna-tuned.
+All circuits load their saved parameters via `use_saved_lstm_params: true`.
 
 | Grand Prix | lstm_window_ratio | sequence_length | lstm_units | dense_units | dropout | recurrent_dropout | learning_rate | batch_size | l2_reg | final epochs |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -329,14 +329,14 @@ circuits load their saved parameters via `use_saved_lstm_params: true`.
 | Saudi Arabian Grand Prix | 0.03 | 2 | 16 | 24 | 0.3308 | 0.0900 | 0.001230 | 16 | 0.000423 | 2 |
 | United States Grand Prix | 0.10 | 6 | 16 | 48 | 0.2409 | 0.1745 | 0.001672 | 16 | 0.001493 | 3 |
 | Italian Grand Prix | 0.05 | 3 | 24 | 24 | 0.3779 | 0.1432 | 0.001414 | 32 | 0.000954 | 2 |
-| Hungarian Grand Prix | 0.03 | 3 | 32 | 48 | 0.2914 | 0.0865 | 0.001169 | 32 | 0.000482 | 14 |
+| Hungarian Grand Prix | 0.03 | 3 | 16 | 24 | 0.3497 | 0.0998 | 0.001498 | 32 | 0.000732 | 20 |
 
-The LSTM search space (v8) tuned by Optuna for the tuned circuits spans
-`lstm_units` ∈ {64, 128}, `lstm_dense_units` ∈ {64, 128}, `lstm_dropout` ∈
-[0.05, 0.50], `lstm_recurrent_dropout` ∈ [0.20, 0.45], `lstm_learning_rate` ∈
-[3e-4, 5e-3] (log), `lstm_batch_size` ∈ {32, 64}, and `lstm_l2_reg` ∈ [1e-4, 3e-3];
-the saved per-circuit values above reflect the fixed sweep-found configuration
-loaded at run time.
+The LSTM search space (v11) tuned by Optuna for the tuned circuits spans
+`lstm_units` ∈ {8, 16, 24, 32}, `lstm_dense_units` ∈ {24, 32, 48}, `lstm_dropout` ∈
+[0.22, 0.42], `lstm_recurrent_dropout` ∈ [0.05, 0.18], `lstm_learning_rate` ∈
+[7e-4, 1.8e-3] (log), `lstm_batch_size` ∈ {16, 32}, `lstm_l2_reg` ∈ [4e-4, 1.5e-3],
+and `lstm_huber_delta` ∈ [0.5, 2.0]; the saved per-circuit values above are loaded at
+run time via `use_saved_lstm_params: true`.
 
 ### Best Individual Validation Window by Grand Prix (SW sweep diagnostics)
 
