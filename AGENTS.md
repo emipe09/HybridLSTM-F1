@@ -40,18 +40,27 @@ Important folders:
 - `Scripts/Source/`: reproducible Python scripts.
 - `Utils/`: auxiliary files such as `requirements.txt`, mappings and configuration files.
 
-Main scripts:
+Main scripts. The experiment is built around three core models (LR-EW, XGBoost-EW,
+`LSTM_hybrid`); the SW models and the baseline-LapTime_prev LSTM are extras kept
+because they were tested.
+
+Core experiment:
+
+- `Scripts/Source/model_lr_ew.py` — Linear Regression with expanding-window validation.
+- `Scripts/Source/model_xgb_ew.py` — XGBoost with expanding-window validation.
+- `Scripts/Source/model_lstm_hybrid.py` — the selected third model (`LSTM_hybrid`): Linear Regression (LR-EW) baseline plus an LSTM trained on the residual `LapTime_seconds - baseline_prediction`. Reuses the `model_lstm_baseline.py` core (single sequential split, sequence construction, Optuna, epoch calibration).
+
+Extra models (tested, kept for comparison):
 
 - `Scripts/Source/model_lr_sw.py` — Linear Regression with sliding-window validation.
-- `Scripts/Source/model_lr_ew.py` — Linear Regression with expanding-window validation.
 - `Scripts/Source/model_xgb_sw.py` — XGBoost with sliding-window validation.
-- `Scripts/Source/model_xgb_ew.py` — XGBoost with expanding-window validation.
-- `Scripts/Source/model_lstm.py` — pure LSTM with single sequential split and sequential holdout.
-- `Scripts/Source/model_lstm_hybrid.py` — the selected third model (`LSTM_hybrid`): best tabular expanding-window baseline (LR-EW or XGBoost-EW, per circuit) plus an LSTM trained on the residual. Reuses the `model_lstm.py` core (single sequential split, sequence construction, Optuna, epoch calibration).
-- `Scripts/Source/window_size_sweep.py` — window size sensitivity analysis across all approaches.
-- `Scripts/Source/search_space_sweep.py` — baseline XGBoost configurations evaluated on the generic window size; derives initial search space bounds.
-- `Scripts/Source/search_space_sweep_ew.py` — baseline XGBoost configurations evaluated on the **final selected EW window size** for each circuit (`xgb_ew_window_ratio`); derives the definitive circuit-specific search space bounds used in the experiment.
-- `Scripts/Source/run_experiment.py` — runs the final LR-EW + XGBoost-EW experiment for all circuits.
+- `Scripts/Source/model_lstm_baseline.py` — the baseline-LapTime_prev LSTM: baseline is the previous lap time, the network learns the residual `LapTime_seconds - LapTime_prev` (`lstm_target_mode = residual_from_laptime_prev`), and **`LapTime_prev` is not a network feature** (`lstm_feature_mode = auxiliary_embedding`). Single sequential split and sequential holdout.
+
+Analysis, figures, and runner:
+
+- `Scripts/Source/model_interpretability.py` — LR coefficients and XGBoost importance/SHAP from the saved final models.
+- `Scripts/Source/plot_driver_holdout_timeseries.py` — per-driver actual vs predicted holdout lap-time plot.
+- `Scripts/Source/run_experiment.py` — runs the final LR-EW + XGBoost-EW experiment for all circuits (add `--with-hybrid` for `LSTM_hybrid`).
 
 ## Dataset ordering
 
@@ -300,22 +309,29 @@ For `model_xgb_sw.py` and `model_xgb_ew.py`:
 
 ## LSTM
 
-Script: `Scripts/Source/model_lstm.py`. Requires TensorFlow/Keras.
+Scripts: `Scripts/Source/model_lstm_hybrid.py` (core model) and
+`Scripts/Source/model_lstm_baseline.py` (the shared LSTM core, also runnable as the
+extra baseline-LapTime_prev model). Requires TensorFlow/Keras.
 
-`model_lstm.py` is the pure LSTM. The selected third model for the final comparison
-is `LSTM_hybrid` (`Scripts/Source/model_lstm_hybrid.py`): the best tabular
-expanding-window baseline (LR-EW or XGBoost-EW, set per circuit via
-`hybrid_baseline_model` from validation metrics, never the holdout) plus an LSTM
-trained to predict the residual `LapTime_seconds - baseline_prediction`; the final
-prediction is `baseline_prediction + lstm_residual_prediction`. The hybrid reuses
-the LSTM core below unchanged (single sequential split, sequence construction,
-Optuna, epoch calibration) and forces `lstm_target_mode = 'residual_from_tabular'`.
-The baseline series is an out-of-fold expanding-window prediction over the modeling
-block (leakage-free for both the validation split and the final residual targets);
-the holdout is never used to train or select the baseline. The same validation
-protocol, preprocessing, leakage rules and metric set described below apply to the
-hybrid. All current circuits use `lr_ew` as the hybrid baseline and the
-`full_embedding` feature mode.
+The selected third model for the final comparison is `LSTM_hybrid`
+(`Scripts/Source/model_lstm_hybrid.py`): by design it uses Linear Regression (LR-EW)
+as the tabular expanding-window baseline (set via `hybrid_baseline_model`, never the
+holdout) so the model keeps a strong linear component, plus an LSTM trained to predict
+the residual `LapTime_seconds - baseline_prediction`; the final prediction is
+`baseline_prediction + lstm_residual_prediction`. The hybrid reuses the LSTM core
+below unchanged (single sequential split, sequence construction, Optuna, epoch
+calibration) and forces `lstm_target_mode = 'residual_from_tabular'`. The baseline
+series is an out-of-fold expanding-window prediction over the modeling block
+(leakage-free for both the validation split and the final residual targets); the
+holdout is never used to train or select the baseline. All current circuits use
+`lr_ew` as the hybrid baseline and the `full_embedding` feature mode for the hybrid.
+
+`model_lstm_baseline.py` is the extra **baseline-LapTime_prev LSTM**: its baseline is
+the previous lap time, it learns the residual `LapTime_seconds - LapTime_prev`
+(`lstm_target_mode = residual_from_laptime_prev`), and **`LapTime_prev` is not a
+network feature** (`lstm_feature_mode = auxiliary_embedding`, which drops `LapTime_prev`
+while keeping Driver/Team embeddings). The same validation protocol, preprocessing,
+leakage rules and metric set described below apply to both.
 
 ### Validation protocol
 
@@ -417,39 +433,21 @@ Same metric set as LR and XGBoost:
 ### Running
 
 ```bash
-# Linux / macOS
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm.py
+# Linux / macOS — core hybrid and the extra baseline-LapTime_prev LSTM
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm_hybrid.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm_baseline.py
 
 # Windows / PowerShell
-$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lstm.py
+$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lstm_hybrid.py
+$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lstm_baseline.py
 ```
-
-## Window size sweep
-
-The script `Scripts/Source/window_size_sweep.py` evaluates both sliding-window
-and expanding-window approaches across a range of window sizes.
-
-Rules:
-
-- Window sizes to test: **5% to 50%** of the total dataset, in configurable steps
-  (default step: 5%). The range and step must be defined in the YAML configuration
-  file, not hardcoded.
-- For each window size, run both SW and EW validation for both LR and XGBoost models.
-- Apply the same temporal ordering (Year → LapNumber) and the same 80/20
-  modeling/holdout split used in the main scripts.
-- Report all standard metrics for each combination: RMSE, MAE, R2, residual STD,
-  sample STD, bootstrap confidence intervals, COS_MAE, COS_RMSE.
-- Save results to a structured output file (e.g. CSV or JSON) so that results
-  can be compared across circuits, models and window sizes without re-running.
-- The output file path must be defined in the YAML configuration file.
-- Do not overwrite previous sweep results without explicit confirmation.
-- The sweep script must be runnable independently of the main model scripts.
 
 ## Final selected configuration per Grand Prix
 
-After running the window size sweep (`window_size_sweep.py`) across both
-validation approaches, the following method and window size were selected as
-the article-facing configuration for each supported Grand Prix. Expanding-window
+A window-size sensitivity analysis was used to select the article-facing
+configuration for each supported Grand Prix (the sweep scripts themselves are no
+longer kept in the repository; the selected values are recorded below and in the
+per-circuit YAML files). Expanding-window
 (EW) validation was selected for every circuit and every model; no circuit
 currently uses a sliding-window (SW) result as its final reported configuration.
 
@@ -512,26 +510,24 @@ Before finishing changes, check whether the scripts still run with:
 
 ```bash
 # Linux / macOS
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_sw.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_ew.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_sw.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_ew.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm.py
-
-# Window size sweep
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/window_size_sweep.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm_hybrid.py
+# Extras
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_sw.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_sw.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm_baseline.py
 ```
 
 ```powershell
 # Windows / PowerShell
-$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lr_sw.py
 $env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lr_ew.py
-$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_xgb_sw.py
 $env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_xgb_ew.py
-$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lstm.py
-
-# Window size sweep
-$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/window_size_sweep.py
+$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lstm_hybrid.py
+# Extras
+$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lr_sw.py
+$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_xgb_sw.py
+$env:TARGET_GP_NAME="Bahrain Grand Prix"; python Scripts/Source/model_lstm_baseline.py
 ```
 
 Supported values for `TARGET_GP_NAME`:

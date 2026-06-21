@@ -48,7 +48,7 @@ from baseline_utils import (
     resolve_baseline_window_ratio,
     resolve_xgb_ew_hparams,
 )
-from model_lstm import (
+from model_lstm_baseline import (
     LSTM_SEARCH_SPACE_VERSION,
     LSTM_TUNING_STRATEGY,
     build_split_indices,

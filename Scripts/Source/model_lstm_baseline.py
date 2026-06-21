@@ -1,4 +1,12 @@
-"""LSTM with single sequential train/val split and sequential holdout.
+"""Baseline-LapTime_prev LSTM: previous-lap baseline + LSTM residual.
+
+This is the "previous-lap baseline" LSTM (an extra model, tested alongside the core
+experiment). The baseline is the driver's previous lap time: the network is trained on
+the residual ``LapTime_seconds - LapTime_prev`` (``lstm_target_mode = residual_from_laptime_prev``)
+and the final prediction is ``LapTime_prev + lstm_residual_prediction``. ``LapTime_prev``
+is deliberately NOT a network input feature (the configured ``lstm_feature_mode`` is
+``auxiliary_embedding``, which drops ``LapTime_prev`` and keeps Driver/Team embeddings);
+the previous-lap signal enters only through the residual target, not as a feature.
 
 Validation protocol:
   - Sequence length  = ceil(n_race_laps * lstm_window_ratio)
@@ -46,7 +54,7 @@ try:
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise ModuleNotFoundError(
         "TensorFlow is required for the LSTM model. Install project dependencies with "
-        "`pip install -r Utils/requirements.txt` before running model_lstm.py."
+        "`pip install -r Utils/requirements.txt` before running model_lstm_baseline.py."
     ) from exc
 
 

@@ -43,7 +43,9 @@ lstm_optuna_trials: 50
 lstm_tuning_epochs: 40
 lstm_tuning_patience: 5
 lstm_min_final_epochs: 20
-lstm_feature_mode: "full_embedding"
+lstm_feature_mode: "auxiliary_embedding"
+lstm_embedding_cols: [Driver, Team]
+lstm_embedding_max_dim: 8
 lstm_include_target_row_features: true
 lstm_target_mode: "residual_from_laptime_prev"
 lstm_group_cols: [Year, Driver]
@@ -83,12 +85,6 @@ lstm_params_subdir: "lstm/params"
 lstm_params_filename_template: "{safe_gp_name}_lstm_params.json"
 lstm_trials_filename_template: "{safe_gp_name}_lstm_optuna_trials.csv"
 lstm_window_ratio: 0.15
-# Window size sweep configuration
-window_size_sweep_min: 0.05
-window_size_sweep_max: 0.55
-window_size_sweep_step: 0.05
-window_sweep_results_dir: "Scripts/Results/window_sweep"
-window_sweep_results_filename_template: "{safe_gp_name}_window_sweep_results.csv"
 # Per-model selected window ratios from window-size sensitivity sweep
 lr_ew_window_ratio: 0.45
 xgb_sw_window_ratio: 0.30

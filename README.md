@@ -34,21 +34,15 @@ TCC/
 |  |- ModelData/
 |  |- Notebooks/
 |  |- Source/
-|     |- model_lr_sw.py
-|     |- model_lr_ew.py
-|     |- model_xgb_sw.py
-|     |- model_xgb_ew.py
-|     |- model_lstm.py
-|     |- model_lstm_hybrid.py
-|     |- window_size_sweep.py
-|     |- search_space_sweep.py
-|     |- search_space_sweep_ew.py
-|     |- run_experiment.py
-|     |- run_all_models.py
+|     |- model_lr_ew.py            # core: LR expanding-window
+|     |- model_xgb_ew.py           # core: XGBoost expanding-window
+|     |- model_lstm_hybrid.py      # core: LR-EW baseline + LSTM residual
+|     |- model_lr_sw.py            # extra: LR sliding-window
+|     |- model_xgb_sw.py           # extra: XGBoost sliding-window
+|     |- model_lstm_baseline.py    # extra: previous-lap baseline + LSTM residual
 |     |- model_interpretability.py
-|     |- backward_elimination.py
-|     |- correlation_ablation_lr.py
-|     |- regression_diagnostics_lr.py
+|     |- plot_driver_holdout_timeseries.py
+|     |- run_experiment.py
 |     |- modeling_utils.py
 |     |- baseline_utils.py
 |     |- xgb_utils.py
@@ -92,23 +86,30 @@ Each notebook is written in English and follows the same structure: data prepara
 
 ## Modeling Scripts
 
-The reproducible modeling and feature-selection scripts are kept in `Scripts/Source/`:
+The reproducible modeling scripts are kept in `Scripts/Source/`. The experiment is
+built around three core models, plus two extra models retained because they were
+tested during the research.
+
+**Core experiment**
+
+- `model_lr_ew.py`: Linear Regression with expanding-window validation and sequential holdout. The training set grows cumulatively across folds; the validation chunk is the same fixed size as the SW validation portion.
+- `model_xgb_ew.py`: XGBoost with expanding-window validation and sequential holdout. Runs an independent Optuna study per fold and aggregates hyperparameters by median across all folds.
+- `model_lstm_hybrid.py`: the selected `LSTM_hybrid` model. By design it uses Linear Regression (LR-EW) as the tabular expanding-window baseline so the model keeps a strong linear component, and the LSTM is trained to predict the residual `LapTime_seconds - baseline_prediction` to capture the remaining complex relationships; the final prediction is `baseline_prediction + lstm_residual_prediction`. The baseline predictions come from an out-of-fold expanding-window series over the modeling block (never the holdout). It reuses the LSTM core from `model_lstm_baseline.py` unchanged and sweeps `lstm_window_ratio` values, keeping the best by validation RMSE.
+
+**Extra models (tested, kept for comparison)**
 
 - `model_lr_sw.py`: Linear Regression with median imputation, standard scaling, sliding-window validation, and sequential holdout.
-- `model_lr_ew.py`: Linear Regression with expanding-window validation and sequential holdout. The training set grows cumulatively across folds; the validation chunk is the same fixed size as the SW validation portion.
 - `model_xgb_sw.py`: XGBoost with regularized Optuna hyperparameter tuning, sliding-window validation, and sequential holdout.
-- `model_xgb_ew.py`: XGBoost with expanding-window validation and sequential holdout. Runs an independent Optuna study per fold (same strategy as SW) and aggregates hyperparameters by median across all folds.
-- `window_size_sweep.py`: window-size sensitivity sweep that evaluates all four combinations of SW/EW × LR/XGBoost for window ratios from the YAML-configured range (default 5%–50% in 5% steps). XGBoost uses pre-tuned parameters loaded from the SW params JSON; Optuna is not re-run per window size. Results are saved to a CSV defined in the YAML configuration.
-- `search_space_sweep.py`: baseline XGBoost configurations evaluated on the generic window size to derive an initial directional prior for each circuit's search space.
-- `search_space_sweep_ew.py`: baseline XGBoost configurations evaluated on the final selected EW window size per circuit (`xgb_ew_window_ratio`); produces the definitive circuit-specific search-space bounds stored in the YAML files.
-- `model_lstm.py`: pure Keras LSTM regression model. Uses a single sequential split (first `window_train_ratio` of the modeling block to train, the rest to validate), Optuna tuning with `EarlyStopping` to calibrate the epoch count, retraining on the full modeling block, and the untouched sequential holdout for final evaluation.
-- `model_lstm_hybrid.py`: the selected `LSTM_hybrid` model. By design it uses Linear Regression (LR-EW) as the tabular expanding-window baseline so the model keeps a strong linear component, and the LSTM is trained to predict the residual `LapTime_seconds - baseline_prediction` to capture the remaining complex relationships; the final prediction is `baseline_prediction + lstm_residual_prediction`. The baseline predictions come from an out-of-fold expanding-window series over the modeling block (never the holdout). It reuses the LSTM core from `model_lstm.py` unchanged and sweeps `lstm_window_ratio` values, keeping the best by validation RMSE.
-- `run_experiment.py`: runs the final per-circuit experiment (LR-EW + XGBoost-EW) for all circuits using the window ratios encoded in each YAML.
+- `model_lstm_baseline.py`: the **baseline-LapTime_prev LSTM**. Its baseline is the driver's **previous lap time**: the network learns the residual `LapTime_seconds - LapTime_prev` (`lstm_target_mode = residual_from_laptime_prev`) and the final prediction is `LapTime_prev + lstm_residual_prediction`. **`LapTime_prev` is not a network input feature** — the configured `lstm_feature_mode` is `auxiliary_embedding`, which drops `LapTime_prev` while keeping Driver/Team embeddings; the previous-lap signal enters only through the residual target. Uses a single sequential split, Optuna tuning with `EarlyStopping`, retraining on the full modeling block, and the untouched holdout for final evaluation.
+
+**Analysis, figures, and runner**
+
 - `model_interpretability.py`: unified interpretability runner that loads the saved Linear Regression and XGBoost models, then exports LR coefficients, XGBoost feature importance, XGBoost SHAP values, and a local SHAP force plot.
-- `backward_elimination.py`: p-value based backward elimination for the Linear Regression design matrix, fitted only on the first sequential modeling block.
-- `correlation_ablation_lr.py`: Linear Regression ablation runner that detects encoded-feature pairs with `|r| >= 0.80` inside the modeling block, then reruns the full sliding-window and sequential-holdout protocol after removing one feature from each pair.
-- `regression_diagnostics_lr.py`: Linear Regression residual-diagnostics runner that fits the model on the sequential modeling block and generates in-sample diagnostics for that retrained 80% block while keeping the final holdout unused.
-- `run_all_models.py`: batch runner for executing configured model scripts across all configured Grand Prix events.
+- `plot_driver_holdout_timeseries.py`: plots a single driver's actual vs predicted lap-time series over the sequential holdout (LR or XGBoost final model) with an approximate 95% prediction band.
+- `run_experiment.py`: runs the final per-circuit experiment (LR-EW + XGBoost-EW, plus `LSTM_hybrid` with `--with-hybrid`) for all circuits using the window ratios encoded in each YAML.
+
+**Shared utilities**
+
 - `modeling_utils.py`: shared configuration, temporal split, encoding, metric, confidence interval, COS, and MLflow tracking helpers. Includes `build_expanding_windows()` and path builders for EW artifacts.
 - `baseline_utils.py`: shared helpers for the hybrid tabular baseline (out-of-fold expanding-window predictions, block predictions, saved-prediction reuse, and XGBoost-EW hyperparameter resolution) with leakage control.
 - `xgb_utils.py`: shared XGBoost utilities (search-space definitions, Optuna integration, DMatrix construction, parameter aggregation) used by both SW and EW XGBoost scripts.
@@ -152,20 +153,23 @@ use sliding/expanding windows; it uses a **single sequential split** because eac
 `(Year, Driver)` group contributes only a small pool of sequences after windowing,
 and multiple folds would fragment that pool and multiply training cost.
 
-`model_lstm.py` is the pure LSTM; `model_lstm_hybrid.py` is the selected
-`LSTM_hybrid` model. Run them from the repository root:
+`model_lstm_hybrid.py` is the selected `LSTM_hybrid` model (LR-EW baseline + LSTM
+residual). `model_lstm_baseline.py` is the extra **baseline-LapTime_prev LSTM**: its
+baseline is the previous lap time, it learns the residual
+`LapTime_seconds - LapTime_prev`, and **it does not use `LapTime_prev` as a network
+feature** (`lstm_feature_mode = auxiliary_embedding`). Run them from the repository root:
 
 ```bash
 # Linux / macOS
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm.py
 TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm_hybrid.py
+TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm_baseline.py
 ```
 
 ```powershell
 # Windows / PowerShell
 $env:TARGET_GP_NAME = "Bahrain Grand Prix"
-.\.venv\Scripts\python.exe Scripts/Source/model_lstm.py
-.\.venv\Scripts\python.exe Scripts/Source/model_lstm_hybrid.py
+python Scripts/Source/model_lstm_hybrid.py
+python Scripts/Source/model_lstm_baseline.py
 ```
 
 **How `LSTM_hybrid` fits the methodology**
@@ -477,135 +481,38 @@ python -m pip install -r Utils/requirements.txt
 
 ## Running a Model
 
-Select a configuration file directly.
+Pick a circuit with either `CONFIG_PATH` (a YAML file) or `TARGET_GP_NAME`, then run
+any script. Examples use `CONFIG_PATH`; on Windows use `python` from the activated
+venv. Run commands from the repository root (paths are case-sensitive on Linux/macOS).
 
-Linux/macOS:
-
-```bash
-export CONFIG_PATH="configs/bahrain.yaml"
-python Scripts/Source/model_lr_sw.py
-python Scripts/Source/model_xgb_sw.py
-python Scripts/Source/model_interpretability.py
-python Scripts/Source/backward_elimination.py
-python Scripts/Source/correlation_ablation_lr.py
-python Scripts/Source/regression_diagnostics_lr.py
-```
-
-Windows/PowerShell:
-
-```powershell
-$env:CONFIG_PATH = "configs/bahrain.yaml"
-.\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
-.\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
-.\.venv\Scripts\python.exe Scripts/Source/model_interpretability.py
-.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
-.\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py
-.\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py
-```
-
-To run the **expanding-window** variants:
-
-Linux/macOS:
+Core experiment (expanding-window) for one circuit:
 
 ```bash
 export CONFIG_PATH="configs/bahrain.yaml"
 python Scripts/Source/model_lr_ew.py
 python Scripts/Source/model_xgb_ew.py
+python Scripts/Source/model_lstm_hybrid.py
 ```
 
-Windows/PowerShell:
-
-```powershell
-$env:CONFIG_PATH = "configs/bahrain.yaml"
-.\.venv\Scripts\python.exe Scripts/Source/model_lr_ew.py
-.\.venv\Scripts\python.exe Scripts/Source/model_xgb_ew.py
-```
-
-To run the **window-size sensitivity sweep** (requires the SW XGBoost params JSON to exist first):
-
-Linux/macOS:
+Extra models (sliding-window LR/XGBoost and the baseline-LapTime_prev LSTM):
 
 ```bash
 export CONFIG_PATH="configs/bahrain.yaml"
-python Scripts/Source/window_size_sweep.py
+python Scripts/Source/model_lr_sw.py
+python Scripts/Source/model_xgb_sw.py
+python Scripts/Source/model_lstm_baseline.py
 ```
 
-Windows/PowerShell:
-
-```powershell
-$env:CONFIG_PATH = "configs/bahrain.yaml"
-.\.venv\Scripts\python.exe Scripts/Source/window_size_sweep.py
-```
-
-The sweep evaluates all four model/protocol combinations (SW × LR, SW × XGBoost, EW × LR, EW × XGBoost) for each configured window ratio and writes results to a CSV under `Scripts/Results/window_sweep/`.
-
-The YAML files control the Grand Prix name, target column, lap column, feature
-lists, validation ratios, COS coefficients, random seed, Optuna settings,
-Grand Prix-specific XGBoost search-space bounds, and MLflow tracking settings,
-and directory/file paths such as `model_data_dir`,
-`results_dir`, and the cleaned dataset filename template. Relative paths are
-resolved from the repository root.
-
-To inspect the experiment history locally, start the MLflow UI from the
-repository root after running at least one model:
-
-Linux/macOS:
+Analysis and figures (run a final model first so its artifact exists):
 
 ```bash
-python -m mlflow ui --backend-store-uri Scripts/Results/mlruns
+export CONFIG_PATH="configs/bahrain.yaml"
+python Scripts/Source/model_interpretability.py
+python Scripts/Source/plot_driver_holdout_timeseries.py --driver VER
 ```
 
-Windows/PowerShell:
-
-```powershell
-python -m mlflow ui --backend-store-uri Scripts/Results/mlruns
-```
-
-Then open the URL printed by MLflow, usually `http://127.0.0.1:5000`.
-
-Alternatively, select a Grand Prix directly:
-
-Linux/macOS:
-
-```bash
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_sw.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_sw.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lr_ew.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_xgb_ew.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_lstm_hybrid.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/window_size_sweep.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/model_interpretability.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/backward_elimination.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/correlation_ablation_lr.py
-TARGET_GP_NAME="Bahrain Grand Prix" python Scripts/Source/regression_diagnostics_lr.py
-```
-
-Windows/PowerShell:
-
-```powershell
-$env:TARGET_GP_NAME = "Bahrain Grand Prix"
-.\.venv\Scripts\python.exe Scripts/Source/model_lr_sw.py
-.\.venv\Scripts\python.exe Scripts/Source/model_xgb_sw.py
-.\.venv\Scripts\python.exe Scripts/Source/model_lr_ew.py
-.\.venv\Scripts\python.exe Scripts/Source/model_xgb_ew.py
-.\.venv\Scripts\python.exe Scripts/Source/model_lstm.py
-.\.venv\Scripts\python.exe Scripts/Source/model_lstm_hybrid.py
-.\.venv\Scripts\python.exe Scripts/Source/window_size_sweep.py
-.\.venv\Scripts\python.exe Scripts/Source/model_interpretability.py
-.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py
-.\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py
-.\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py
-```
-
-On Linux/macOS, paths are case-sensitive. Run commands from the repository root
-and keep directory names exactly as shown, for example `Scripts/Source/` rather
-than `scripts/source/`.
-
-To reproduce the final reported experiment (LR-EW + XGBoost-EW for every circuit,
-using the window ratios encoded in each YAML), use the dedicated runner:
-
-Linux/macOS:
+Reproduce the full reported experiment (LR-EW + XGBoost-EW for every circuit, using
+the window ratios encoded in each YAML); add `--with-hybrid` to also run `LSTM_hybrid`:
 
 ```bash
 python Scripts/Source/run_experiment.py
@@ -613,117 +520,16 @@ python Scripts/Source/run_experiment.py --circuit bahrain italy
 python Scripts/Source/run_experiment.py --with-hybrid
 ```
 
-Windows/PowerShell:
+If a circuit's XGBoost parameter file is missing or no longer matches the current YAML
+bounds, sampler, or tuning procedure, the XGBoost script re-runs Optuna before
+training (an independent study per fold), so the run takes longer.
 
-```powershell
-.\.venv\Scripts\python.exe Scripts/Source/run_experiment.py
-.\.venv\Scripts\python.exe Scripts/Source/run_experiment.py --circuit bahrain italy
-.\.venv\Scripts\python.exe Scripts/Source/run_experiment.py --with-hybrid
-```
-
-Add `--with-hybrid` to also run `LSTM_hybrid` after the tabular models, so the
-reused EW baseline predictions are already available.
-
-To run all configured Grand Prix events and both model families in sequence:
-
-Linux/macOS:
+Inspect the experiment history locally by starting the MLflow UI from the repository
+root after running at least one model, then open the printed URL (usually
+`http://127.0.0.1:5000`):
 
 ```bash
-python Scripts/Source/run_all_models.py
-```
-
-Windows/PowerShell:
-
-```powershell
-.\.venv\Scripts\python.exe Scripts/Source/run_all_models.py
-```
-
-You can limit the batch run to one model family or add EW and sweep variants:
-
-Linux/macOS:
-
-```bash
-python Scripts/Source/run_all_models.py --models lr
-python Scripts/Source/run_all_models.py --models xgb
-python Scripts/Source/run_all_models.py --models lr lr_ew xgb xgb_ew
-python Scripts/Source/run_all_models.py --models sweep
-```
-
-Windows/PowerShell:
-
-```powershell
-.\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models lr
-.\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models xgb
-.\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models lr lr_ew xgb xgb_ew
-.\.venv\Scripts\python.exe Scripts/Source/run_all_models.py --models sweep
-```
-
-Available `--models` options: `lr`, `lr_ew`, `xgb`, `xgb_ew`, `lstm`, `sweep`. The default is `lr xgb`, which preserves the existing behaviour without running EW or sweep unless explicitly requested.
-
-If an XGBoost parameter file is not available for a circuit, or if the saved
-parameters do not match the current YAML bounds, sampler, or documented tuning
-procedure, the XGBoost script will run Optuna before
-training, so the full batch may take substantially longer. The current XGBoost
-tuning protocol runs an independent Optuna study for each sliding window inside
-the first 80% modeling block; `optuna_trials` is therefore interpreted as trials
-per window. Each study minimizes validation RMSE. Final hyperparameters are the
-median of the best Optuna parameters selected in all sliding windows, with
-integer parameters rounded to the nearest integer. Final `n_estimators` is the
-median early-stopping iteration across those same windows. The untouched
-sequential holdout is evaluated only after this selection is complete.
-XGBoost searches also export a
-per-trial CSV with the source window for auditability.
-Backward-elimination outputs are generated under
-`Scripts/Results/backward_elimination/` and are ignored by Git.
-To run backward elimination for every configured Grand Prix:
-
-Linux/macOS:
-
-```bash
-python Scripts/Source/backward_elimination.py --all
-```
-
-Windows/PowerShell:
-
-```powershell
-.\.venv\Scripts\python.exe Scripts/Source/backward_elimination.py --all
-```
-
-Correlation-ablation outputs are generated under
-`Scripts/Results/correlation_ablation_lr/` and are ignored by Git. To run the
-correlated-feature ablation for every configured Grand Prix:
-
-Linux/macOS:
-
-```bash
-python Scripts/Source/correlation_ablation_lr.py --all
-```
-
-Windows/PowerShell:
-
-```powershell
-.\.venv\Scripts\python.exe Scripts/Source/correlation_ablation_lr.py --all
-```
-
-Regression-diagnostics outputs are generated under
-`Scripts/Results/regression_diagnostics/` and are ignored by Git. The diagnostic
-script preserves the final sequential holdout: preprocessing and the Linear
-Regression model are fitted only on the first modeling block, then residual
-plots, prediction tables, a standard statsmodels OLS summary, and coefficient
-plots are produced for that retrained 80% modeling block. The final 20% holdout
-remains unused by the diagnostic script and is reserved for final model
-evaluation. To run the diagnostics for every configured Grand Prix:
-
-Linux/macOS:
-
-```bash
-python Scripts/Source/regression_diagnostics_lr.py --all
-```
-
-Windows/PowerShell:
-
-```powershell
-.\.venv\Scripts\python.exe Scripts/Source/regression_diagnostics_lr.py --all
+python -m mlflow ui --backend-store-uri Scripts/Results/mlruns
 ```
 
 Supported `TARGET_GP_NAME` values are:
@@ -775,10 +581,9 @@ adjust the configured feature set used by the affected circuit models.
 ## Reproducibility Notes
 
 - The final 20% of race laps is reserved as a sequential holdout.
-- Sliding-window and expanding-window validation are performed only inside the first 80% modeling block. The LSTM and `LSTM_hybrid` models instead use a single sequential split inside that same modeling block.
+- Sliding-window and expanding-window validation are performed only inside the first 80% modeling block. The `LSTM_hybrid` and baseline-LapTime_prev LSTM models instead use a single sequential split inside that same modeling block.
 - XGBoost SW parameter files are generated under `Scripts/Results/xgboost/sw/params/` when needed. XGBoost EW parameter files (the final reported configuration) are generated under `Scripts/Results/xgboost/ew/params/`. Both are ignored by Git.
 - LSTM artifacts are generated under `Scripts/Results/lstm/` and `LSTM_hybrid` artifacts (models, params, and audit baseline predictions) under `Scripts/Results/lstm_hybrid/`; both are ignored by Git.
-- Window-size sweep results are generated under `Scripts/Results/window_sweep/` and are ignored by Git.
 - MLflow run metadata is generated under `Scripts/Results/mlruns/` by default and is ignored by Git.
 - The notebooks remain the narrative, circuit-specific record of the analysis; the scripts are the lean reproducible runners for GitHub.
 
