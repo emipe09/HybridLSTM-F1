@@ -6,7 +6,7 @@ The final model comparison covers three model families:
 
 - **Linear Regression** (expanding-window validation);
 - **XGBoost** (expanding-window validation, circuit-specific Optuna search space);
-- **`LSTM_hybrid`** — the selected third model: the best tabular expanding-window baseline (LR-EW or XGBoost-EW, chosen per circuit from validation metrics) plus an LSTM that predicts the residual. The LSTM component uses a single sequential validation split rather than sliding/expanding windows.
+- **`LSTM_hybrid`** — the selected third model: the best  LR-EW per circuit plus an LSTM that predicts the residual. The LSTM component uses a single sequential validation split rather than sliding/expanding windows.
 
 ## Scope
 
