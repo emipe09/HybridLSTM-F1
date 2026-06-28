@@ -56,7 +56,7 @@ F1-MultiCircuit-LapTimeModel/
 |  |  |- model_lr_ew_driver.py / model_xgb_ew_driver.py / model_lstm_driver.py  # driver-filtered baselines
 |  |  |- modeling_utils.py / baseline_utils.py / xgb_utils.py        # shared helpers
 |  |  |- run_experiment.py       # runner for all circuits
-|  |  |- model_interpretability.py, plot_*.py, gen_*.py, eda_*.py, ...  # analysis layer (see docs)
+|  |  |- model_interpretability.py, plot_*.py, eda_*.py, ...  # analysis layer (see docs)
 |  |- Results/                  # generated output (git-ignored)
 ```
 

@@ -38,15 +38,6 @@ the `*_utils.py` helpers) are documented in the [README](../README.md) and
 | `plot_boxplot_weather_year_italy.py` | Italy weather + lap-time boxplots by year (paper Fig. 2 style). → `boxplot_weather_year/` |
 | `plot_bar_compound_year_italy.py` | Italy compound usage per season. → `bar_compound_year/` |
 
-## LaTeX table generation
-| Script | Produces |
-|---|---|
-| `gen_driver_results_tables.py` | Driver finishing positions by year, per circuit. → `tables_*.tex` |
-| `gen_instances_per_driver_table.py` | Lap counts: per-driver vs full-circuit (RQ1). → `tables_*.tex` |
-| `gen_laptime_by_lap_tables.py` | Mean lap time by lap number, val/holdout coloured. → `tables_*.tex` |
-| `gen_laptime_characterization_tables.py` | Lap-count / lap-time stats per driver/team/year. → `tables_*.tex` |
-| `gen_std_train_test_table.py` | Residual STD train/test per model (read from MLflow). → `tables_*.tex` |
-
 ## Experiments & interpretability
 | Script | Produces |
 |---|---|
