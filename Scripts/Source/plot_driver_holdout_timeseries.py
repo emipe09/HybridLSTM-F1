@@ -8,9 +8,15 @@ XGBoost final model, and plots, for one driver:
   - the predicted lap-time line,
   - an approximate 95% prediction band around the line (+/- z * residual_std).
 
+The LSTM hybrid (``--model hybrid``) does not refit here (it needs the LSTM + Optuna
+pipeline); instead the script loads the per-row holdout predictions exported by
+``model_lstm_hybrid.py`` (``*_hybrid_holdout_predictions.csv``) and joins the Pirelli
+compound / tyre life back from the cleaned data. Run that script for the Grand Prix first.
+
 Usage (Linux / macOS):
     CONFIG_PATH=configs/hungary.yaml python Scripts/Source/plot_driver_holdout_timeseries.py --driver VER
     CONFIG_PATH=configs/hungary.yaml python Scripts/Source/plot_driver_holdout_timeseries.py --driver NOR --model xgb
+    CONFIG_PATH=configs/hungary.yaml python Scripts/Source/plot_driver_holdout_timeseries.py --driver VER --model hybrid
 """
 
 from __future__ import annotations
@@ -61,9 +67,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--driver", required=True, help="Driver code to plot (e.g. VER, NOR, HAM).")
     parser.add_argument(
         "--model",
-        choices=["lr", "xgb"],
+        choices=["lr", "xgb", "hybrid"],
         default="lr",
-        help="Which final EW model to use for the predictions (default: lr).",
+        help=(
+            "Which final model to use for the predictions (default: lr). 'hybrid' loads the "
+            "saved LSTM-hybrid holdout predictions instead of refitting."
+        ),
     )
     parser.add_argument(
         "--year",
@@ -162,6 +171,57 @@ def predict_holdout(
     return np.asarray(booster.predict(dmatrix), dtype=float)
 
 
+def build_hybrid_series(
+    target_gp_name: str,
+    config: dict,
+    repo_root: Path,
+    laps_cleaned: pd.DataFrame,
+) -> tuple[pd.DataFrame, float]:
+    """Load the saved LSTM-hybrid holdout predictions and join compound/tyre life.
+
+    The hybrid is not refit here: model_lstm_hybrid.py exports per-row holdout
+    predictions (Year, Driver, LapNumber, y_true, hybrid_pred, baseline_pred). We
+    reuse those and merge the Pirelli compound and tyre life back from the cleaned
+    data so the plot matches the lr/xgb path. Returns the holdout series (one row per
+    predicted lap) and the holdout residual std used for the prediction band.
+    """
+    feature_mode = str(config.get("hybrid_lstm_feature_mode", "full_embedding")).lower()
+    model_kind = str(config.get("hybrid_baseline_model", "lr_ew")).lower()
+    safe_name = f"{safe_gp_name(target_gp_name)}_{feature_mode}_{model_kind}"
+
+    baseline_subdir = str(config.get("hybrid_baseline_predictions_subdir", "lstm_hybrid/baseline"))
+    pred_path = (
+        resolve_repo_path(repo_root, str(config["results_dir"]))
+        / baseline_subdir
+        / f"{safe_name}_hybrid_holdout_predictions.csv"
+    )
+    if not pred_path.exists():
+        raise FileNotFoundError(
+            f"LSTM-hybrid holdout predictions not found: {pred_path}\n"
+            "Run Scripts/Source/model_lstm_hybrid.py for this Grand Prix first."
+        )
+
+    preds = pd.read_csv(pred_path)
+    preds["Driver"] = preds["Driver"].astype(str)
+    preds["Year"] = pd.to_numeric(preds["Year"], errors="coerce").astype("Int64")
+    preds["LapNumber"] = pd.to_numeric(preds["LapNumber"], errors="coerce")
+
+    residuals = preds["y_true"].to_numpy(dtype=float) - preds["hybrid_pred"].to_numpy(dtype=float)
+    residual_std = float(np.std(residuals, ddof=1)) if len(residuals) > 1 else 0.0
+
+    # Join Pirelli compound and tyre life from the cleaned data on (Year, Driver, LapNumber).
+    meta = laps_cleaned[["Year", "Driver", "LapNumber", "pirelliCompound", "TyreLife"]].copy()
+    meta["Driver"] = meta["Driver"].astype(str)
+    meta["Year"] = pd.to_numeric(meta["Year"], errors="coerce").astype("Int64")
+    meta["LapNumber"] = pd.to_numeric(meta["LapNumber"], errors="coerce")
+    meta = meta.drop_duplicates(subset=["Year", "Driver", "LapNumber"])
+
+    series = preds.merge(meta, on=["Year", "Driver", "LapNumber"], how="left")
+    series["pirelliCompound"] = series["pirelliCompound"].fillna("UNKNOWN").astype(str)
+    series = series.rename(columns={"y_true": "LapTime_seconds", "hybrid_pred": "prediction"})
+    return series, residual_std
+
+
 def plot_driver(
     target_gp_name: str,
     driver: str,
@@ -178,7 +238,8 @@ def plot_driver(
     lower = pred - z * residual_std
     upper = pred + z * residual_std
 
-    model_label = "Linear Regression" if model_choice == "lr" else "XGBoost"
+    model_labels = {"lr": "Linear Regression", "xgb": "XGBoost", "hybrid": "LSTM Hybrid"}
+    model_label = model_labels.get(model_choice, model_choice)
     fig, ax = plt.subplots(figsize=(16, 8))
 
     ax.fill_between(
@@ -241,19 +302,24 @@ def main() -> None:
 
     target_gp_name, config, repo_root, laps_cleaned = load_cleaned_data(Path(__file__))
 
-    X_model_raw, y_model, X_holdout_raw, y_holdout, holdout_meta, cat_cols = build_blocks(
-        laps_cleaned.copy(), config
-    )
+    if args.model == "hybrid":
+        # The hybrid is not refit here; reuse the predictions exported by model_lstm_hybrid.py.
+        series, residual_std = build_hybrid_series(target_gp_name, config, repo_root, laps_cleaned.copy())
+        holdout_meta = None
+    else:
+        X_model_raw, y_model, X_holdout_raw, y_holdout, holdout_meta, cat_cols = build_blocks(
+            laps_cleaned.copy(), config
+        )
 
-    preds = predict_holdout(args.model, repo_root, config, X_model_raw, y_model, X_holdout_raw, cat_cols)
+        preds = predict_holdout(args.model, repo_root, config, X_model_raw, y_model, X_holdout_raw, cat_cols)
 
-    # Residual std over the whole holdout block defines the band width (matches std_holdout in the EW scripts).
-    residuals = y_holdout.to_numpy(dtype=float) - preds
-    residual_std = float(np.std(residuals, ddof=1)) if len(residuals) > 1 else 0.0
+        # Residual std over the whole holdout block defines the band width (matches std_holdout in the EW scripts).
+        residuals = y_holdout.to_numpy(dtype=float) - preds
+        residual_std = float(np.std(residuals, ddof=1)) if len(residuals) > 1 else 0.0
 
-    series = holdout_meta.copy()
-    series["LapTime_seconds"] = y_holdout.to_numpy(dtype=float)
-    series["prediction"] = preds
+        series = holdout_meta.copy()
+        series["LapTime_seconds"] = y_holdout.to_numpy(dtype=float)
+        series["prediction"] = preds
 
     driver_series = series[series["Driver"] == driver]
     if driver_series.empty:
@@ -282,10 +348,13 @@ def main() -> None:
         target_gp_name, driver, args.model, args.z, driver_series, residual_std, output_dir, year
     )
 
-    holdout_start = decode_step_key(int(holdout_meta["step"].min()))
-    holdout_end = decode_step_key(int(holdout_meta["step"].max()))
     print(f"\n--- DRIVER HOLDOUT TIME SERIES: {target_gp_name} | {driver} | {args.model.upper()} ---")
-    print(f"Holdout block: {holdout_start} -> {holdout_end} | total holdout records={len(series)}")
+    if holdout_meta is not None:
+        holdout_start = decode_step_key(int(holdout_meta["step"].min()))
+        holdout_end = decode_step_key(int(holdout_meta["step"].max()))
+        print(f"Holdout block: {holdout_start} -> {holdout_end} | total holdout records={len(series)}")
+    else:
+        print(f"Total holdout predictions (saved hybrid): {len(series)}")
     print(f"Driver laps plotted ({year}): {len(driver_series)} | residual std (band)={residual_std:.4f}s")
     print(f"- {png_path}")
     print(f"- {pdf_path}")

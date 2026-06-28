@@ -788,7 +788,7 @@ def fit_final_lstm(
         )
     else:
         preds = preds_target
-    return preds, y_holdout_seq, holdout_laps, model, imputer, feature_scaler, target_scaler, feature_names, final_epoch_count, feature_meta
+    return preds, y_holdout_seq, holdout_laps, model, imputer, feature_scaler, target_scaler, feature_names, final_epoch_count, feature_meta, holdout_row_indices
 
 
 def metric_values(y_true, preds):
@@ -1133,7 +1133,7 @@ def main():
     print("\n--- Training final LSTM model ---")
     (
         preds_holdout, y_holdout_seq, holdout_seq_laps,
-        final_model, _, _, _, feature_names, final_epoch_count, feature_meta,
+        final_model, _, _, _, feature_names, final_epoch_count, feature_meta, _,
     ) = fit_final_lstm(
         X_model_raw, y_model, lap_model_sorted, group_model,
         X_holdout_raw, y_holdout, lap_holdout_sorted, group_holdout,

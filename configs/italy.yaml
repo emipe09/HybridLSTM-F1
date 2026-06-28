@@ -102,3 +102,22 @@ hybrid_baseline_predictions_subdir: "lstm_hybrid/baseline"
 hybrid_lstm_feature_mode: "full_embedding"
 # Hybrid LSTM: selected sequence-length ratio from validation RMSE (never holdout)
 lstm_window_ratio_sweep: [0.05]
+
+# Driver-filtered EW baselines (methodological sensitivity; do NOT overwrite the main EW artifacts)
+ew_driver_lr_models_subdir: "linear_regression/ew_driver/models"
+ew_driver_lr_model_filename_template: "{safe_gp_name}_{safe_driver}_lr_model_ew_driver.pkl"
+ew_driver_lr_model_metadata_filename_template: "{safe_gp_name}_{safe_driver}_lr_model_ew_driver_metadata.json"
+ew_driver_xgb_params_subdir: "xgboost/ew_driver/params"
+ew_driver_xgb_params_filename_template: "{safe_gp_name}_{safe_driver}_xgb_params_ew_driver.json"
+ew_driver_xgb_models_subdir: "xgboost/ew_driver/models"
+ew_driver_xgb_model_filename_template: "{safe_gp_name}_{safe_driver}_xgb_model_ew_driver.json"
+ew_driver_xgb_model_metadata_filename_template: "{safe_gp_name}_{safe_driver}_xgb_model_ew_driver_metadata.json"
+
+# Driver-filtered standalone LSTM (absolute target; methodological comparison, separate artifacts)
+lstm_driver_feature_mode: "full_embedding"
+lstm_driver_models_subdir: "lstm_driver/models"
+lstm_driver_model_filename_template: "{safe_gp_name}_{safe_driver}_lstm_model_driver.keras"
+lstm_driver_model_metadata_filename_template: "{safe_gp_name}_{safe_driver}_lstm_model_driver_metadata.json"
+lstm_driver_params_subdir: "lstm_driver/params"
+lstm_driver_params_filename_template: "{safe_gp_name}_{safe_driver}_lstm_params_driver.json"
+lstm_driver_trials_filename_template: "{safe_gp_name}_{safe_driver}_lstm_optuna_trials_driver.csv"

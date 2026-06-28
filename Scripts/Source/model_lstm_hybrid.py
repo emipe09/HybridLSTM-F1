@@ -329,7 +329,7 @@ def main():
         # --- Final model + holdout ---
         (
             preds_holdout, y_holdout_seq, holdout_seq_laps,
-            final_model, _, _, _, feature_names, final_epoch_count, feature_meta,
+            final_model, _, _, _, feature_names, final_epoch_count, feature_meta, holdout_row_indices,
         ) = fit_final_lstm(
             X_model_raw, y_model, lap_model_sorted, group_model,
             X_holdout_raw, y_holdout, lap_holdout_sorted, group_holdout,
@@ -360,7 +360,12 @@ def main():
             "holdout_metrics": holdout_metrics,
             "holdout_ci": holdout_ci,
             "y_val_seq": y_val_seq,
+            "preds_val": preds_val,
+            "val_seq_laps": val_seq_laps,
             "y_holdout_seq": y_holdout_seq,
+            "preds_holdout": preds_holdout,
+            "holdout_seq_laps": holdout_seq_laps,
+            "holdout_row_indices": holdout_row_indices,
             "final_model": final_model,
             "feature_names": feature_names,
             "params_path": r_params_path,
@@ -510,6 +515,49 @@ def main():
     pd.DataFrame({"y": y_holdout, "baseline_holdout": baseline_holdout}).to_csv(
         baseline_dir / f"{safe_name}_hybrid_baseline_holdout.csv", index=False
     )
+
+    # Per-row hybrid holdout predictions, tagged with Year/Driver/LapNumber so the holdout
+    # performance can be sliced by driver afterwards. holdout_row_indices index the
+    # concatenated (modeling + holdout) frame; subtracting n_model maps them to positions in
+    # the holdout block, whose order is holdout_order_idx (original df_base indices). Year and
+    # Driver are read straight from df_base (not from the LSTM sequence groups, which may be
+    # empty/flat) so the tagging is always correct.
+    n_model = len(X_model_raw)
+    holdout_positions = np.asarray(best["holdout_row_indices"], dtype=int) - n_model
+    orig_holdout_idx = np.asarray(holdout_order_idx)[holdout_positions]
+    holdout_pred_frame = pd.DataFrame(
+        {
+            "y_true": np.asarray(best["y_holdout_seq"], dtype=float),
+            "hybrid_pred": np.asarray(best["preds_holdout"], dtype=float),
+            "baseline_pred": baseline_holdout.to_numpy()[holdout_positions],
+        }
+    )
+    holdout_pred_frame.insert(
+        0, "LapNumber", pd.to_numeric(df_base.loc[orig_holdout_idx, lap_col], errors="coerce").to_numpy()
+    )
+    if "Driver" in df_base.columns:
+        holdout_pred_frame.insert(0, "Driver", df_base.loc[orig_holdout_idx, "Driver"].to_numpy())
+    if "Year" in df_base.columns:
+        holdout_pred_frame.insert(0, "Year", df_base.loc[orig_holdout_idx, "Year"].to_numpy())
+    holdout_pred_path = baseline_dir / f"{safe_name}_hybrid_holdout_predictions.csv"
+    holdout_pred_frame.to_csv(holdout_pred_path, index=False)
+    print(f"Saved per-row hybrid holdout predictions to: {holdout_pred_path}")
+
+    # Per-row hybrid VALIDATION predictions (sequential validation split of the modeling
+    # block, selected on validation RMSE). Unlike the holdout, fit_predict_lstm does not
+    # return the validation row indices, so Year/Driver cannot be recovered here; LapNumber
+    # comes from the sequence target laps. y_true/hybrid_pred are enough to compute the
+    # residual (y_true - hybrid_pred) for the residual-vs-laptime diagnostics.
+    val_pred_frame = pd.DataFrame(
+        {
+            "LapNumber": pd.to_numeric(pd.Series(best["val_seq_laps"]), errors="coerce").to_numpy(),
+            "y_true": np.asarray(best["y_val_seq"], dtype=float),
+            "hybrid_pred": np.asarray(best["preds_val"], dtype=float),
+        }
+    )
+    val_pred_path = baseline_dir / f"{safe_name}_hybrid_validation_predictions.csv"
+    val_pred_frame.to_csv(val_pred_path, index=False)
+    print(f"Saved per-row hybrid validation predictions to: {val_pred_path}")
 
     split_info = {
         "total_laps": total_laps,
