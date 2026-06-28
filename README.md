@@ -121,11 +121,25 @@ When `mlflow_enabled` is true, runs are logged to `Scripts/Results/mlruns` (git-
 
 ## Installation
 
+Reference environment: **Python 3.12** (tested on 3.12.3, Linux). The versions in
+`Utils/requirements.txt` are pinned for reproducibility — using a different Python
+version may fail to install the pinned `numpy`/`tensorflow` wheels, so prefer 3.12.
+
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate            # Windows: .\.venv\Scripts\Activate.ps1
 python -m pip install -r Utils/requirements.txt
 ```
+
+### Reproducibility
+
+With the pinned versions above and the seeds in each `configs/*.yaml`
+(`random_seed: 42`), the LR-EW and XGBoost-EW results reproduce bit-for-bit
+(verified: identical Optuna/TPE search and XGBoost training). The pipeline reuses
+cached hyperparameters (`Scripts/Results/.../*_params_ew.json`) when present;
+delete them to re-run the Optuna tuning from scratch. The LSTM/hybrid models
+(TensorFlow) may vary slightly on GPU, since the pipeline does not enable
+deterministic GPU ops.
 
 ## Running
 

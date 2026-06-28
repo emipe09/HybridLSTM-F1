@@ -1,14 +1,21 @@
-fastf1
-pandas
-numpy
-matplotlib
-seaborn
-scikit-learn
-plotly
-scipy
-statsmodels
-xgboost
-optuna
-shap
-mlflow
-tensorflow
+# Versões fixadas para reprodutibilidade do experimento.
+# Ambiente de referência: Python 3.12.3 (Linux).
+# As seeds (random_seed=42 nos configs) garantem resultados determinísticos
+# do LR-EW e XGB-EW (Optuna/TPE + XGBoost) APENAS com estas versões.
+# Observação: o LSTM/híbrido (TensorFlow) pode variar levemente em GPU,
+# pois o pipeline não habilita determinismo de operações em GPU.
+
+fastf1==3.8.3
+pandas==2.3.3
+numpy==2.4.6
+matplotlib==3.10.9
+seaborn==0.13.2
+scikit-learn==1.9.0
+plotly==6.8.0
+scipy==1.17.1
+statsmodels==0.14.6
+xgboost==3.2.0
+optuna==4.9.0
+shap==0.52.0
+mlflow==3.13.0
+tensorflow==2.21.0
