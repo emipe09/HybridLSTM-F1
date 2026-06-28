@@ -41,9 +41,16 @@ notebooks (now removed). It rebuilds each `cleaned_data.csv`:
 7. Write the full frame to `Scripts/ModelData/<GP>/<safe_gp_name>_cleaned_data.csv`.
 
 ### Usage
+Linux/macOS:
 ```bash
-CONFIG_PATH=configs/usa.yaml      python Scripts/Source/prepare_data.py
+CONFIG_PATH=configs/usa.yaml        python Scripts/Source/prepare_data.py
 TARGET_GP_NAME="Italian Grand Prix" python Scripts/Source/prepare_data.py
+```
+
+Windows/PowerShell:
+```powershell
+$env:CONFIG_PATH = "configs/usa.yaml";          python Scripts/Source/prepare_data.py
+$env:TARGET_GP_NAME = "Italian Grand Prix";     python Scripts/Source/prepare_data.py
 ```
 
 ### Verification

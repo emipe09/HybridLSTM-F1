@@ -130,11 +130,24 @@ python -m pip install -r Utils/requirements.txt
 ## Running
 
 Pick a circuit with `CONFIG_PATH` (a YAML) or `TARGET_GP_NAME`, then run from the repository
-root (paths are case-sensitive on Linux/macOS).
+root (paths are case-sensitive on Linux/macOS). Only the way you set the environment variable
+differs between shells; the `python ...` commands below are identical on both.
+
+Linux/macOS:
 
 ```bash
 export CONFIG_PATH="configs/bahrain.yaml"
+```
 
+Windows/PowerShell:
+
+```powershell
+$env:CONFIG_PATH = "configs/bahrain.yaml"
+```
+
+Then (same on both):
+
+```bash
 # (re)build the cleaned dataset for this circuit
 python Scripts/Source/prepare_data.py
 
