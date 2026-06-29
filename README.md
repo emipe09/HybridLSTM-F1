@@ -1,7 +1,6 @@
 # Formula 1 Race-Pace Prediction
 
-Research code and supplementary material for the paper *"Multi-Circuit Formula 1 Lap Time
-Prediction: A Hybrid Deep Learning Approach for Race Pace Analysis"* (KDMiLe 2026). The
+Research code and supplementary material for the paper *"Residual Hybrid Learning for Data-Limited Formula 1 Lap Time Prediction Across Multiple Circuits"* (KDMiLe 2026). The
 project models `LapTime_seconds` from public FastF1 race data with a temporal protocol that
 mirrors a real race: expanding-window validation inside the modeling block and a final
 sequential holdout on the last laps.

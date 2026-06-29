@@ -1,7 +1,6 @@
 # Paper ↔ Code Alignment Audit
 
-Maps every methodology step of the paper *"Multi-Circuit Formula 1 Lap Time Prediction:
-A Hybrid Deep Learning Approach for Race Pace Analysis"* (KDMiLe 2026) to the code that
+Maps every methodology step of the paper *"Residual Hybrid Learning for Data-Limited Formula 1 Lap Time Prediction Across Multiple Circuits"* (KDMiLe 2026) to the code that
 implements it, and records the divergences found between the written paper and the code.
 **The code is the source of truth unless noted otherwise.**
 
